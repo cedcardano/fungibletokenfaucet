@@ -21,4 +21,4 @@ This file is intended to be run from Python Shell. It goes without saying that i
 ```faucet.runloop("mypassphrase",period=300)```
 
 # Parameter Constraints
-todo
+todo: minimum 'buffer' ADA, beta distribution explanation, throughput and contention, selecting fees and profit, bundle size
