@@ -15,7 +15,9 @@ This file is intended to be run from Python Shell. It requires the same package 
 
  ```faucet =  Faucet('apiKeyStr',"5045524e4953","184673879d2b78582141d8d6fefeb47879d27f370903335bd1e23792","walletID",'faucetaddr', 1800000,455202, 0.000015)```
 
-6. If setting up the faucet for the first time, generate the blockchain index and remaining token files with the```generateFiles``` class method. Ensure that you enter the initial token balance as a parameter - this will be difficult to track with the API as the balance will become increasingly fragmented across many UTXOs and change addresses as the faucet runs. This will take a note of the current blockchain tip, and all subsequent incoming transactions to the faucet address will treated as potential faucet actuations. The files will now update themselves and will not need to be generated again for subsequent Faucet instances.
+6. If setting up the faucet for the first time, generate the blockchain index and remaining token files with the```generateFiles``` class method. Ensure that you enter the initial token balance as a parameter - this will be difficult to track with the API as the balance will become increasingly fragmented across many UTXOs and change addresses as the faucet runs. This will take a note of the current blockchain tip, and all subsequent incoming transactions to the faucet address will treated as potential faucet actuations. The files will now update themselves and will not need to be generated again for subsequent Faucet instances. As an example, if there are 1,000,000,000,000 tokens to be distributed, you can use
+
+```faucet.generateFiles(1000000000000)```
 
 7. Launch the faucet with ```runloop```, ensuring you enter your passphrase. Something like
 ```faucet.runloop("mypassphrase",period=300)```
