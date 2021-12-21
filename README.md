@@ -4,7 +4,7 @@ A token faucet for Cardano that runs on top of emesik's cardano-python module: h
 Requires a local node (can use Daedalus' socket) and a cardano-wallet server on localhost. You will also need a Blockfrost API key, since this script is intended to not require cardano-db-sync.
 
 # How-to
-This file is intended to be run from Python Shell. It goes without saying that it requires the same package installations as cardano-python - ensure those are present in the venv.
+This file is intended to be run from Python Shell. It requires the same package installations as cardano-python - please ensure those are present in the venv.
 
 1. Place the .py file in the cardano-python/cardano directory
 2. Launch Python Shell in the cardano-python directory
