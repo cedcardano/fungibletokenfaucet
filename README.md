@@ -1,6 +1,8 @@
 # fungibletokenfaucet
 A token faucet for Cardano that runs on top of emesik's cardano-python module: https://github.com/emesik/cardano-python
 
+Features a toggle for multioutput transaction support, built in sleep timers for contention with UTXO selection, throughput management with a natural backlog, transaction bundling.
+
 Requires a local node (can use Daedalus' socket) and a cardano-wallet server on localhost. You will also need a Blockfrost API key, since this script is intended to not require cardano-db-sync.
 
 # How-to
