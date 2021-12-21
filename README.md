@@ -20,6 +20,7 @@ This file is intended to be run from Python Shell. It requires the same package 
 ```faucet.generateFiles(1000000000000)```
 
 7. Launch the faucet with ```runloop```, ensuring you enter your passphrase. Something like
+
 ```faucet.runloop("mypassphrase",period=300)```
 
 # Parameter Constraints
