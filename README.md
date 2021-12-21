@@ -15,7 +15,7 @@ This file is intended to be run from Python Shell. It requires the same package 
 4. Ensure your wallet is known to cardano-wallet. You may import this (with a recovery phrase) using the cardano-wallet command line interface, or with cardano-python directly in the shell, or you may generate a new wallet. In particular, ensure you have a valid walletID (wid) and faucet address that belongs to the wallet.
 5. Create your Faucet object - see documentation for parameters. A sample call may be
 
- ```faucet =  Faucet('mainnetXxxxxxxxx',"5045524e4953","184673879d2b78582141d8d6fefeb47879d27f370903335bd1e23792","2956b3b992010bbc1f16a92308a9927cc2a38d37",'addrXxxxxxx', 1800000,455202, 0.000015)```
+ ```faucet =  Faucet('mainnetXxxxxxxxx',"544f4b454e","978caf0d02a0fd5381c3a3f59367b2951c99d06954dd92cbc77cc52b","2956b3b992010bbc1f16a92308a9927cc2a38d37",'addrXxxxxxx', 1800000,455202, 0.000015)```
 
 6. If setting up the faucet for the first time, generate the blockchain index and remaining token files with the```generateFiles``` class method. Ensure that you enter the initial token balance as a parameter - this will be difficult to track with the API as the balance will become increasingly fragmented across many UTXOs and change addresses as the faucet runs. This will take a note of the current blockchain tip, and all subsequent incoming transactions to the faucet address will treated as potential faucet actuations. The files will now update themselves and will not need to be generated again for subsequent Faucet instances. As an example, if there are 1,000,000,000,000 tokens to be distributed, you can use
 
