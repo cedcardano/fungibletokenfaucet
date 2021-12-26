@@ -117,6 +117,7 @@ class Faucet:
         try:
             lastblock, lastindex = self.readIndex()
             remainingtokens = self.getAssetBalance()
+            currpullscount = self.getPullsCount()
         except FileNotFoundError:
             raise FileNotFoundError("You have not generated the blockchain index files. Please call generateFiles.")
 
@@ -226,7 +227,6 @@ class Faucet:
 
         numbersentthisloop = len(pendingTxList)
         print(f"No. Pulls:   {numbersentthisloop}")
-        currpullscount = self.getPullsCount()
         self.writePullsCount(numbersentthisloop+currpullscount)
         
 
