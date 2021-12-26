@@ -44,6 +44,7 @@ class Faucet:
         self.lastTxPosFile = assetName+assetPolicyID+faucetAddr+"pos.txt"
         self.tokenTxFile = assetName+assetPolicyID+faucetAddr+"tkn.txt"
         self.assetBalanceFile = assetName+assetPolicyID+faucetAddr+"balance.txt"
+        self.PullsCountFile = assetName+assetPolicyID+faucetAddr+"pullscnt.txt"
 
         self.pullcost = pullcost
         self.proportionperpull = proportionperpull
@@ -55,9 +56,11 @@ class Faucet:
     #non-volatile memory.
     #run this once when setting up the faucet for the first time. It will
     #set a marker to disregard all transactions made prior to the time of running this method.
-    def generateFiles(self, initTokenBalance, blockIndex=None):
+    def generateFiles(self, initTokenBalance, blockIndex=None, totalpulls=None):
         if blockIndex is None:
             blockIndex = int(self.api.block_latest().height)
+        if totalpulls is None:
+            totalpulls = 0
         self.writeIndex(blockIndex,0)
         self.writeAssetBalance(initTokenBalance)
 
@@ -85,7 +88,7 @@ class Faucet:
         #implement ways to define different pull yield distribution types (fixed value or normal distribution) and diminishing returns mode (fixed or proportional to faucet contents)
 
         starttime = datetime.now()
-        totalpulls = 0
+
         for i in range(loops):
             try:
                 print(f"LOOP:        {i+1}")
@@ -94,10 +97,7 @@ class Faucet:
                 print(f"TIME:        {timenowstr}")
                 timediff = timenow - starttime
                 print(f"UPTIME:      {timediff}")
-                numbersentthisloop = self.sendtokens(passphrase,multiutxo=multiutxo)
-                totalpulls += numbersentthisloop
-                print(f"No. Pulls:   {numbersentthisloop}")
-                print(f"Tot. Pulls:  {totalpulls}")
+                self.sendtokens(passphrase,multiutxo=multiutxo)
                 time.sleep(period)
             except ApiError:
                 print("ERROR RECOVERY")
@@ -223,7 +223,13 @@ class Faucet:
         if len(NFTtxlog)>0:
             with open(self.tokenTxFile, 'a') as f:
                 f.write(f"\n{str(NFTtxlog)}")
-        return len(pendingTxList)
+
+        numbersentthisloop = len(pendingTxList)
+        print(f"No. Pulls:   {numbersentthisloop}")
+        currpullscount = self.getPullsCount()
+        self.writePullsCount(numbersentthisloop+currpullscount)
+        
+
 
     #pendingTxList of format list of tuples of (senderaddr, pullyield, amountpaid)
     #
@@ -308,6 +314,18 @@ class Faucet:
         with open(self.assetBalanceFile, 'a') as f:
             f.write(f"\n{str(balance)}")
         print(f"TOKENS REM:  {str(balance)}")
+
+    def getPullsCount(self):
+        with open(self.PullsCountFile, 'r') as f:
+            lines = f.read().splitlines()
+            last_line = lines[-1]
+            return int(last_line)
+
+    #save processed transactions to file
+    def writePullsCount(self, balance):
+        with open(self.PullsCountFile, 'a') as f:
+            f.write(f"\n{str(balance)}")
+        print(f"Tot. Pulls:  {str(balance)}")
 
     def calculateYield(self, proportionperpull, remainingtokens):
         return int(round(2*random.betavariate(12, 12)*int(round(remainingtokens*proportionperpull))))
