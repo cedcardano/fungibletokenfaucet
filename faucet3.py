@@ -48,6 +48,7 @@ class Faucet:
 
         self.pullcost = pullcost
         self.proportionperpull = proportionperpull
+        self.pullprofitraw = pullprofit
         self.pullprofit = Decimal(str(pullprofit/1000000))
 
         print("Faucet Created.")
@@ -147,6 +148,7 @@ class Faucet:
         pendingTxList = []
         NFTtxlog = []
 
+        badsends = 0
         for tx in newtxs:
             txutxos = None
             attempt = 0
@@ -176,6 +178,7 @@ class Faucet:
                         else:
                             outputshere.append(int(output.amount[0].quantity))
 
+
             #outputshere contains array of integers, lovelace content for each utxo
             if incomingtx:
                 if containsNFTs:
@@ -202,16 +205,16 @@ class Faucet:
                             remainingtokens -= randomyield
 
                     first = True
-                    badsends = 0
+
                     for utxoquant in parttwo:
                         if utxoquant >= self.pullcost:
                             randomyield = 0
-                            sendquant = utxoquant
                             if first:
+                                sendquant = utxoquant
                                 randomyield = self.calculateYield(self.proportionperpull, remainingtokens)
                                 first = False
                             else:
-                                sendquant += self.pullprofit
+                                sendquant = utxoquant + self.pullprofitraw
                                 badsends += 1
                             pendingTxList.append((txinputs[0].address,randomyield, sendquant))
                             remainingtokens -= randomyield
