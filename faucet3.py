@@ -184,34 +184,37 @@ class Faucet:
                     #multiutxo 1 means all utxos are treated as one chunks
                     #multiutxo 0 means all utxos are treated separately
                     #multiutxo 5 means utxos are treated separately up to a maximum of five chunks
-                    
-                    if multiutxo == 0:
-                        for utxoquant in outputshere:
-                            if utxoquant >= self.pullcost:
-                                randomyield = self.calculateYield(self.proportionperpull, remainingtokens)
-                                pendingTxList.append((txinputs[0].address,randomyield, utxoquant))
-                                remainingtokens -= randomyield
-                    else:
-                        if multiutxo >= len(outputshere):
-                            for utxoquant in outputshere:
-                                if utxoquant >= self.pullcost:
-                                    randomyield = self.calculateYield(self.proportionperpull, remainingtokens)
-                                    pendingTxList.append((txinputs[0].address,randomyield, utxoquant))
-                                    remainingtokens -= randomyield
-                        else:
-                            partone = outputshere[0:multiutxo-1]
-                            parttwo = outputshere[multiutxo-1:]
-                            for utxoquant in partone:
-                                if utxoquant >= self.pullcost:
-                                    randomyield = self.calculateYield(self.proportionperpull, remainingtokens)
-                                    pendingTxList.append((txinputs[0].address,randomyield, utxoquant))
-                                    remainingtokens -= randomyield
-                            totaloutput = sum(parttwo)
-                            if totaloutput >= self.pullcost:
-                                randomyield = self.calculateYield(self.proportionperpull, remainingtokens)
-                                pendingTxList.append((txinputs[0].address,randomyield, totaloutput))
-                                remainingtokens -= randomyield
+                    #partone is the chunk where every output is considered
+                    #parttwo is considered aggregated
+                    partone = []
+                    parttwo = []
 
+                    if multiutxo == 0 or multiutxo >= len(outputshere):
+                        partone = outputshere
+                    else:
+                        partone = outputshere[0:multiutxo-1]
+                        parttwo = outputshere[multiutxo-1:]
+
+                    for utxoquant in partone:
+                        if utxoquant >= self.pullcost:
+                            randomyield = self.calculateYield(self.proportionperpull, remainingtokens)
+                            pendingTxList.append((txinputs[0].address,randomyield, utxoquant))
+                            remainingtokens -= randomyield
+
+                    first = True
+                    for utxoquant in parttwo:
+                        if utxoquant >= self.pullcost:
+                            randomyield = 0
+                            sendquant = utxoquant
+                            if first:
+                                randomyield = self.calculateYield(self.proportionperpull, remainingtokens)
+                                first = False
+                            else:
+                                sendquant += self.pullprofit
+                            pendingTxList.append((txinputs[0].address,randomyield, sendquant))
+
+                    
+                    
         if len(pendingTxList)>0:
             self.autoSendAssets(pendingTxList, self.pullprofit, passphrase)
             self.writeAssetBalance(remainingtokens)
