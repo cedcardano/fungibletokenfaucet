@@ -184,19 +184,14 @@ class Faucet:
                     #multiutxo 1 means all utxos are treated as one chunks
                     #multiutxo 0 means all utxos are treated separately
                     #multiutxo 5 means utxos are treated separately up to a maximum of five chunks
-                    if multiutxo == 1:
-                        totaloutput = sum(outputshere)
-                        if totaloutput >= self.pullcost:
-                            randomyield = self.calculateYield(self.proportionperpull, remainingtokens)
-                            pendingTxList.append((txinputs[0].address,randomyield, totaloutput))
-                            remainingtokens -= randomyield
-                    elif multiutxo == 0:
+                    
+                    if multiutxo == 0:
                         for utxoquant in outputshere:
                             if utxoquant >= self.pullcost:
                                 randomyield = self.calculateYield(self.proportionperpull, remainingtokens)
                                 pendingTxList.append((txinputs[0].address,randomyield, utxoquant))
                                 remainingtokens -= randomyield
-                    elif multiutxo > 1:
+                    else:
                         if multiutxo >= len(outputshere):
                             for utxoquant in outputshere:
                                 if utxoquant >= self.pullcost:
