@@ -209,12 +209,12 @@ class Faucet:
                     for utxoquant in parttwo:
                         if utxoquant >= self.pullcost:
                             randomyield = 0
+                            sendquant = utxoquant
                             if first:
-                                sendquant = utxoquant
                                 randomyield = self.calculateYield(self.proportionperpull, remainingtokens)
                                 first = False
                             else:
-                                sendquant = utxoquant + self.pullprofitraw
+                                sendquant += self.pullprofitraw
                                 badsends += 1
                             pendingTxList.append((txinputs[0].address,randomyield, sendquant))
                             remainingtokens -= randomyield
