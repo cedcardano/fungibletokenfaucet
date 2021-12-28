@@ -258,7 +258,10 @@ class Faucet:
         for groupof in groupsof:
             destinations = []
             for pendingtx in groupof:
-                destinations.append((pendingtx[0], Decimal(str(pendingtx[-1]/1000000))-profit, [(self.assetIDObj,pendingtx[1])]))
+                if pendingtx[1]!=0:
+                    destinations.append((pendingtx[0], Decimal(str(pendingtx[-1]/1000000))-profit, [(self.assetIDObj,pendingtx[1])]))
+                else:
+                    destinations.append((pendingtx[0], Decimal(str(pendingtx[-1]/1000000))-profit))
 
             attempts = 0
             sent = False
