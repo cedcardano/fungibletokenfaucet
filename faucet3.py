@@ -202,6 +202,7 @@ class Faucet:
                             remainingtokens -= randomyield
 
                     first = True
+                    badsends = 0
                     for utxoquant in parttwo:
                         if utxoquant >= self.pullcost:
                             randomyield = 0
@@ -211,10 +212,11 @@ class Faucet:
                                 first = False
                             else:
                                 sendquant += self.pullprofit
+                                badsends += 1
                             pendingTxList.append((txinputs[0].address,randomyield, sendquant))
+                            remainingtokens -= randomyield
 
-                    
-                    
+
         if len(pendingTxList)>0:
             self.autoSendAssets(pendingTxList, self.pullprofit, passphrase)
             self.writeAssetBalance(remainingtokens)
@@ -223,10 +225,11 @@ class Faucet:
             with open(self.tokenTxFile, 'a') as f:
                 f.write(f"\n{str(NFTtxlog)}")
 
-        numbersentthisloop = len(pendingTxList)
+        numbersentthisloop = len(pendingTxList)-badsends
         print(f"No. Pulls:   {numbersentthisloop}")
+        print(f"Bad Pulls:   {badsends}")
         self.writePullsCount(numbersentthisloop+currpullscount)
-        
+
 
 
     #pendingTxList of format list of tuples of (senderaddr, pullyield, amountpaid)
