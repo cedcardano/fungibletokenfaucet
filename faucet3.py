@@ -51,7 +51,7 @@ class Faucet:
         self.pullprofitraw = pullprofit
         self.pullprofit = Decimal(str(pullprofit/1000000))
 
-        print("Faucet Created.")
+        print("Faucet Created.\n")
 
     #generates files for the first time. every time the script is run, it draws from these files as
     #non-volatile memory.
@@ -105,7 +105,7 @@ class Faucet:
                 self.rollbackIndex()
                 time.sleep(3)
             finally:
-                print("\n")
+                print("\n\n")
 
     #returns NFTtxlog
     #log file name in str form
@@ -118,9 +118,11 @@ class Faucet:
         try:
             lastblock, lastindex = self.readIndex()
             remainingtokens = self.getAssetBalance()
+            lastbalance = remainingtokens
             currpullscount = self.getPullsCount()
         except FileNotFoundError:
             raise FileNotFoundError("You have not generated the blockchain index files. Please call generateFiles.")
+
 
         lastblocktxcount = None
         attempt = 0
@@ -131,6 +133,8 @@ class Faucet:
                 attempt += 1
                 print(f"Block fetch attempt {attempt} API Error - reattempting.")
                 time.sleep(3)
+
+
 
         if lastindex == lastblocktxcount-1:
             from_block = str(lastblock+1)+":0"
@@ -145,10 +149,12 @@ class Faucet:
             self.writeIndex(newlastblock, newlastindex)
 
         #format of pendingTxList is [(senderaddr, pullyield(PERNIS), amountpaid(lovelace))]
+        print(f"\nTOKENS CNT:  {lastbalance}")
         pendingTxList = []
         NFTtxlog = []
-
         badsends = 0
+        yieldthisloop = 0
+
         for tx in newtxs:
             txutxos = None
             attempt = 0
@@ -203,6 +209,7 @@ class Faucet:
                             randomyield = self.calculateYield(self.proportionperpull, remainingtokens)
                             pendingTxList.append((txinputs[0].address,randomyield, utxoquant))
                             remainingtokens -= randomyield
+                            yieldthisloop += randomyield
 
                     first = True
 
@@ -218,11 +225,16 @@ class Faucet:
                                 badsends += 1
                             pendingTxList.append((txinputs[0].address,randomyield, sendquant))
                             remainingtokens -= randomyield
-
+                            yieldthisloop += randomyield
 
         if len(pendingTxList)>0:
             self.autoSendAssets(pendingTxList, self.pullprofit, passphrase)
-            self.writeAssetBalance(remainingtokens)
+
+        if remainingtokens != (lastbalance-yieldthisloop):
+            print(f"\nMismatch: Remtokens = {remainingtokens}, CalculatedBalance = {(lastbalance-yieldthisloop)}")
+
+        print(f"TOKENS SENT: {str(yieldthisloop)}")
+        self.writeAssetBalance(lastbalance-yieldthisloop)
 
         if len(NFTtxlog)>0:
             with open(self.tokenTxFile, 'a') as f:
@@ -320,7 +332,7 @@ class Faucet:
     def writeAssetBalance(self, balance):
         with open(self.assetBalanceFile, 'a') as f:
             f.write(f"\n{str(balance)}")
-        print(f"TOKENS REM:  {str(balance)}")
+        print(f"TOKENS REM:  {str(balance)}\n")
 
     def getPullsCount(self):
         with open(self.PullsCountFile, 'r') as f:
