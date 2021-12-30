@@ -98,7 +98,7 @@ class Faucet:
                 print(f"TIME:        {timenowstr}")
                 timediff = timenow - starttime
                 print(f"UPTIME:      {timediff}")
-                self.sendtokens(passphrase,multiutxo=multiutxo)
+                self.sendtokens(passphrase,multiutxo=multiutxo, multsallowed=multsallowed)
                 time.sleep(period)
             except ApiError:
                 print("ERROR RECOVERY")
