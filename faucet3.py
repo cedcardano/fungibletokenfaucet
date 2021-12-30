@@ -82,7 +82,7 @@ class Faucet:
 
     #multi utxo support (first n outputs to count): 1 for no multiutxo, singular output, 5 for first five utxos, 0 for unlimited
     #useful for testing throughput without wasting too much tx fees
-    def runloop(self, passphrase, period=300,loops = 10000,bundlesize=20, multiutxo=1):
+    def runloop(self, passphrase, period=300,loops = 10000,bundlesize=20, multiutxo=1, multsallowed = 1):
         self.bundlesize = bundlesize
         ## TODO:
         #implement more intuitive ways to tweak the pullcost, pullprofit, proportionperpull  parameters. at the very least these should be passed in, not hardcoded
@@ -109,12 +109,14 @@ class Faucet:
 
     #returns NFTtxlog
     #log file name in str form
-    def sendtokens(self,passphrase, multiutxo=1):
+    def sendtokens(self,passphrase, multiutxo: int = 1, multsallowed: int = 1):
 
 
         if multiutxo < 0:
             raise Exception("Multiutxo arg cannot be less than 0.")
-        #make sure there's no index overflow by checking size of last block checked
+        if multsallowed < 1 or (not isinstance(multsallowed, int)):
+            raise Exception("Illegal multsallowed parameter.")
+
         try:
             lastblock, lastindex = self.readIndex()
             remainingtokens = self.getAssetBalance()
@@ -154,6 +156,7 @@ class Faucet:
         NFTtxlog = []
         badsends = 0
         yieldthisloop = 0
+        numbersentthisloop = 0
 
         for tx in newtxs:
             txutxos = None
@@ -185,6 +188,7 @@ class Faucet:
                             outputshere.append(int(output.amount[0].quantity))
 
 
+
             #outputshere contains array of integers, lovelace content for each utxo
             if incomingtx:
                 if containsNFTs:
@@ -194,15 +198,15 @@ class Faucet:
                     #multiutxo 0 means all utxos are treated separately
                     #multiutxo 5 means utxos are treated separately up to a maximum of five chunks
                     #partone is the chunk where every output is considered
-                    #parttwo is considered aggregated
+                    #parttwo is excess (to be returned)
                     partone = []
                     parttwo = []
 
                     if multiutxo == 0 or multiutxo >= len(outputshere):
                         partone = outputshere
                     else:
-                        partone = outputshere[0:multiutxo-1]
-                        parttwo = outputshere[multiutxo-1:]
+                        partone = outputshere[0:multiutxo]
+                        parttwo = outputshere[multiutxo:]
 
                     for utxoquant in partone:
                         if utxoquant >= self.pullcost:
@@ -211,21 +215,29 @@ class Faucet:
                             remainingtokens -= randomyield
                             yieldthisloop += randomyield
 
-                    first = True
+                    #TODO: refactor pullprofit to be passed in, fix typing of profit
+
+                    #note pendingList already takes out one copy of pullprofit
+
+                    for utxoquant in partone:
+                        if utxoquant >= self.pullcost:
+                            validmults = min(multsallowed, utxoquant // self.pullcost)
+                            returnada = utxoquant - ((validmults-1)*self.pullprofitraw)
+                            randomyield = []
+
+                            for i in range(validmults):
+                                localyield = self.calculateYield(self.proportionperpull, remainingtokens)
+                                randomyield.append(localyield)
+                                remainingtokens -= localyield
+
+                            pendingTxList.append((txinputs[0].address,sum(randomyield), returnada))
+                            yieldthisloop += sum(randomyield)
+                            numbersentthisloop += validmults
 
                     for utxoquant in parttwo:
                         if utxoquant >= self.pullcost:
-                            randomyield = 0
-                            sendquant = utxoquant
-                            if first:
-                                randomyield = self.calculateYield(self.proportionperpull, remainingtokens)
-                                first = False
-                            else:
-                                sendquant += self.pullprofitraw
-                                badsends += 1
-                            pendingTxList.append((txinputs[0].address,randomyield, sendquant))
-                            remainingtokens -= randomyield
-                            yieldthisloop += randomyield
+                            badsends += 1
+                            pendingTxList.append((txinputs[0].address,0, utxoquant + self.pullprofitraw))
 
         if len(pendingTxList)>0:
             self.autoSendAssets(pendingTxList, self.pullprofit, passphrase)
@@ -240,7 +252,7 @@ class Faucet:
             with open(self.tokenTxFile, 'a') as f:
                 f.write(f"\n{str(NFTtxlog)}")
 
-        numbersentthisloop = len(pendingTxList)-badsends
+
         print(f"No. Pulls:   {numbersentthisloop}")
         print(f"Bad Pulls:   {badsends}")
         self.writePullsCount(numbersentthisloop+currpullscount)
