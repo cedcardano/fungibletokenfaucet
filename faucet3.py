@@ -208,15 +208,7 @@ class Faucet:
                         partone = outputshere[0:multiutxo]
                         parttwo = outputshere[multiutxo:]
 
-                    for utxoquant in partone:
-                        if utxoquant >= self.pullcost:
-                            randomyield = self.calculateYield(self.proportionperpull, remainingtokens)
-                            pendingTxList.append((txinputs[0].address,randomyield, utxoquant))
-                            remainingtokens -= randomyield
-                            yieldthisloop += randomyield
-
                     #TODO: refactor pullprofit to be passed in, fix typing of profit
-
                     #note pendingList already takes out one copy of pullprofit
 
                     for utxoquant in partone:
