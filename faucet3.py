@@ -204,7 +204,7 @@ class Faucet:
             else:
                 plfrom_block = str(bounds[0][0])+":"+str(bounds[0][1]+1)
 
-
+            #this could fail - but shouldn't.
             plnewtxs = self.api.address_transactions(address=addr, from_block=plfrom_block, to_block=str(bounds[1][0])+":"+str(bounds[1][1]))
             if len(plnewtxs) > 0:
                 plnewtxslist.append(plnewtxs)
@@ -383,7 +383,7 @@ class Faucet:
                             handleDict = self.readHandleLoc(self)
                             #30 is placeholder number of blocks
                             latestblock = self.api.block_latest.height
-                            blockscounttolerance = 40
+                            blockscounttolerance = 100
 
                             #keep in search registy for 40 blocks from here
                             #list - from block, to block. to block does not change, is upper bound
