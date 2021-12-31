@@ -31,6 +31,11 @@ class Faucet:
     #walletID: str - reference ID of wallet used by cardano-wallet
     #faucetAddr: str - receiving address of faucet
     #port: int - port that cardano-wallet is broadcasting on
+
+
+
+
+    #DO NOT SEND HANDLE TO SAME ADDRESS AS FAUCET MAIN
     def __init__(self, apiKey,assetName, assetPolicyID, walletID, faucetAddr,pullcost=2000000, pullprofit=500000, proportionperpull=0.000015, port=8090, handlestr: str = None):
         self.api = BlockFrostApi(project_id=apiKey)
         self.assetName = assetName
@@ -207,7 +212,6 @@ class Faucet:
             #this could fail - but shouldn't.
             plnewtxs = self.api.address_transactions(address=addr, from_block=plfrom_block, to_block=str(bounds[1][0])+":"+str(bounds[1][1]))
             if len(plnewtxs) > 0:
-                plnewtxslist.append(plnewtxs)
                 newlastblock = plnewtxs[-1].block_height
                 newlastindex = plnewtxs[-1].tx_index
                 handleDict["pastlocs"][addr][0] = [newlastblock, newlastindex]
@@ -217,7 +221,7 @@ class Faucet:
         #prune handleDict based on currentblock
         if len(handleDict["pastlocs"])>0:
             deladdrs=[]
-            latestblock = self.api.block_latest.height
+            latestblock = self.api.block_latest().height
             for addr, bounds in handleDict["pastlocs"].items():
                 if bounds[1][0]<=latestblock:
                     deladdrs.append(addr)
@@ -371,6 +375,7 @@ class Faucet:
                 #if it still doesn't go through after 300 seconds of pause, the wallet has probably run out of funds, or the blockchain is
                 #ridiculously congested
                 try:
+
                     outboundtx = self.wallet.transfer_multiple(destinations, passphrase=passphrase)
                     sent = True
 
@@ -382,7 +387,7 @@ class Faucet:
                         if handleDest:
                             handleDict = self.readHandleLoc(self)
                             #30 is placeholder number of blocks
-                            latestblock = self.api.block_latest.height
+                            latestblock = self.api.block_latest().height
                             blockscounttolerance = 100
 
                             #keep in search registy for 40 blocks from here
