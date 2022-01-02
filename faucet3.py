@@ -19,9 +19,7 @@ import json
 #self.api: Blockfrost SDK Api object
 #self.assetID: cardano.simpletypes AssetID object
 #self.wallet: cardano.wallet wallet object
-#self.faucetAddr: string of receiving address of faucet
-#self.lastTxPosFile: str of filename of txt file that stores the block position of the last tx processed
-#self.tokenTxFile: str of filename of txt file that stores the hashes of the incoming txs with tokens
+
 class Faucet:
 
     #constructor
@@ -32,11 +30,7 @@ class Faucet:
     #faucetAddr: str - receiving address of faucet
     #port: int - port that cardano-wallet is broadcasting on
 
-
-
-
-    #DO NOT SEND HANDLE TO SAME ADDRESS AS FAUCET MAIN
-    def __init__(self, apiKey,assetName, assetPolicyID, walletID, faucetAddr,pullcost=2000000, pullprofit=500000, proportionperpull=0.000015, port=8090, handlestr: str = None):
+    def __init__(self, apiKey,assetName, assetPolicyID, walletID, faucetAddr,pullcost=2000000, pullprofit=500000, proportionperpull=0.000015, port=8090):
         self.api = BlockFrostApi(project_id=apiKey)
         self.assetName = assetName
         self.assetPolicyID = assetPolicyID
@@ -45,23 +39,10 @@ class Faucet:
         self.faucetAddr = faucetAddr
         self.bundlesize = None
 
-        self.handlestr = handlestr
+        self.logFile = assetName+assetPolicyID+faucetAddr+"v2.json"
 
-        if handlestr:
-            try:
-                self.readHandleLoc()
-            except FileNotFoundError:
-                #generate
-                handleaddress = self.api.asset_addresses(asset="f0ff48bbb7bbe9d59a40f1ce90e9e9d0ff5002ec48f232b49ca0fb9a"+self.hexencode(handlestr))[0].address
-                handlelocdict = {"currentloc":[handleaddress, (100,0)], "pastlocs":{}}
-                self.writeHandleLoc(handlelocdict)
-
-        self.tokenTxFile = assetName+assetPolicyID+faucetAddr+"tkn.txt"
-        self.logFile = assetName+assetPolicyID+faucetAddr+".json"
-
-        self.pullcost = pullcost
+        self.pullcost = Decimal(str(pullcost/1000000))
         self.proportionperpull = proportionperpull
-        self.pullprofitraw = pullprofit
         self.pullprofit = Decimal(str(pullprofit/1000000))
 
         print("Faucet Created.\n")
@@ -83,7 +64,7 @@ class Faucet:
 
     #multi utxo support (first n outputs to count): 1 for no multiutxo, singular output, 5 for first five utxos, 0 for unlimited
     #useful for testing throughput without wasting too much tx fees
-    def runloop(self, passphrase, period=300,loops = 10000,bundlesize=20, multiutxo=1, multsallowed = 1):
+    def runloop(self, passphrase, period=300,loops = 10000,bundlesize=20, multsallowed = 1):
         self.bundlesize = bundlesize
         ## TODO:
         #implement more intuitive ways to tweak the pullcost, pullprofit, proportionperpull  parameters. at the very least these should be passed in, not hardcoded
@@ -91,259 +72,95 @@ class Faucet:
 
         starttime = datetime.now()
 
+
         for i in range(loops):
-            try:
-                print(f"LOOP:        {i+1}")
-                timenow = datetime.now()
-                timenowstr = timenow.strftime("%H:%M:%S")
-                print(f"TIME:        {timenowstr}")
-                timediff = timenow - starttime
-                print(f"UPTIME:      {timediff}")
-                self.sendtokens(passphrase,multiutxo=multiutxo, multsallowed=multsallowed)
-                time.sleep(period)
-            except ApiError:
-                print("ERROR RECOVERY")
-                self.rollbackIndex()
-                time.sleep(3)
-            finally:
-                print("\n\n")
+            print(f"LOOP:        {i+1}")
+            timenow = datetime.now()
+            timenowstr = timenow.strftime("%H:%M:%S")
+            print(f"TIME:        {timenowstr}")
+            timediff = timenow - starttime
+            print(f"UPTIME:      {timediff}")
 
-    #returns NFTtxlog
-    #log file name in str form
-    def sendtokens(self,passphrase, multiutxo: int = 1, multsallowed: int = 1):
+            self.sendtokens(passphrase, multsallowed=multsallowed)
+            time.sleep(period)
 
+            print("\n\n")
 
-        if multiutxo < 0:
-            raise Exception("Multiutxo arg cannot be less than 0.")
+    def sendtokens(self,passphrase, multsallowed: int = 1):
         if multsallowed < 1 or (not isinstance(multsallowed, int)):
             raise Exception("Illegal multsallowed parameter.")
 
-        try:
-            lastblock, lastindex = self.readIndex()
+        try:            
             remainingtokens = self.readAssetBalance()
-            lastbalance = remainingtokens
+            inittokens = remainingtokens
             currpullscount = self.readPullsCount()
+            lasttime = self.readLastTime()
         except FileNotFoundError:
             raise FileNotFoundError("You have not generated the blockchain index files. Please call generateLog.")
 
 
+############################################################################################################
+
+        currenttime = datetime.utcnow()
+        print(f"Time interval: {str(lasttime)[:-7]} to {str(currenttime)[:-7]}")
+        newtxs = self.wallet.txsfiltered(lasttime, currenttime)
+        self.writeLastTime(currenttime)
+
+        incomingtxs = []
+        for tx in newtxs:
+            if tx.local_inputs == []:
+                incomingtxs.append(tx)
+
+        sendlist=[]
+        numpulls = 0
+        for tx in incomingtxs:
+            txoutputs = list(tx.local_outputs)
+
+            containsAssets = False
+            for output in txoutputs:
+                if output.assets != []:
+                    containsAssets = True
+
+            if not containsAssets:
+                senderaddr = None
+                attempt = 0
+                while senderaddr is None:
+                    try:
+                        senderaddr = self.api.transaction_utxos(hash=tx.txid).inputs[0].address
+                    except ApiError:
+                        attempt += 1
+                        print(f"Sender address fetch attempt {attempt} API Error - reattempting.")
+                        time.sleep(3)
+
+                countedoutput = txoutputs[0]
+                extraoutputs = txoutputs[1:]
+
+                if countedoutput.amount >= self.pullcost:
+                    validmults = int(min(multsallowed, countedoutput.amount // self.pullcost))
+                    returnada = countedoutput.amount - validmults*self.pullprofit
+                    randomyield = validmults*self.calculateYield(self.proportionperpull, remainingtokens)
+
+                    sendlist.append({"senderaddr": senderaddr, "pullyield": randomyield, "returnada": returnada})
+
+                    remainingtokens -= randomyield
+                    numpulls += validmults
+                for output in extraoutputs:
+                    sendlist.append({"senderaddr": senderaddr, "pullyield": 0, "returnada": output.amount})
 
 
-        allnewtxs={}
+        if len(sendlist)>0:
+            self.autoSendAssets(sendlist, passphrase)
 
 
-        lastblocktxcount = None
-        attempt = 0
-        while lastblocktxcount is None:
-            try:
-                lastblocktxcount = self.api.block(str(lastblock)).tx_count
-            except:
-                attempt += 1
-                print(f"Block fetch attempt {attempt} API Error - reattempting.")
-                time.sleep(3)
+        print(f"TOKENS SENT: {str(inittokens-remainingtokens)}")
+        self.writeAssetBalance(remainingtokens)
 
-
-
-
-
-        if lastindex == lastblocktxcount-1:
-            from_block = str(lastblock+1)+":0"
-        else:
-            from_block = str(lastblock)+":"+str(lastindex+1)
-
-        newtxs = self.api.address_transactions(address=self.faucetAddr, from_block=from_block)
-
-        if len(newtxs) > 0:
-            newlastblock = newtxs[-1].block_height
-            newlastindex = newtxs[-1].tx_index
-            self.writeIndex(newlastblock, newlastindex)
-            allnewtxs[self.faucetAddr] = newtxs
-
-###################################################
-
-        handleDict = self.readHandleLoc()
-        #format is ["addr", ["blockheight", "index"]]
-        handleCurrentLoc = handleDict["currentloc"]
-        #format is {"addr": [[fromblock, index],[toblock,index]]}
-        handlePastLocs = handleDict["pastlocs"]
-
-        cllastblocktxcount = None
-        attempt = 0
-        while cllastblocktxcount is None:
-            try:
-                cllastblocktxcount = self.api.block(str(handleCurrentLoc[1][0])).tx_count
-            except:
-                attempt += 1
-                print(f"Block fetch attempt {attempt} API Error - reattempting.")
-                time.sleep(3)
-
-        if handleCurrentLoc[1][1] == cllastblocktxcount-1:
-            clfrom_block = str(handleCurrentLoc[1][0]+1)+":0"
-        else:
-            clfrom_block = str(handleCurrentLoc[1][0])+":"+str(handleCurrentLoc[1][1]+1)
-
-        clnewtxs = self.api.address_transactions(address=handleCurrentLoc[0], from_block=clfrom_block)
-
-        if len(clnewtxs) > 0:
-            newlastblock = clnewtxs[-1].block_height
-            newlastindex = clnewtxs[-1].tx_index
-            handleDict["currentloc"][1] = [newlastblock, newlastindex]
-            allnewtxs[handleCurrentLoc[0]] = clnewtxs
-
-
-
-
-        for addr, bounds in  handlePastLocs.items():
-            pllastblocktxcount = None
-            attempt = 0
-            while pllastblocktxcount is None:
-                try:
-                    pllastblocktxcount = self.api.block(str(bounds[0][0])).tx_count
-                except:
-                    attempt += 1
-                    print(f"Block fetch attempt {attempt} API Error - reattempting.")
-                    time.sleep(3)
-
-            if bounds[0][1] == pllastblocktxcount-1:
-                plfrom_block = str(bounds[0][0]+1)+":0"
-            else:
-                plfrom_block = str(bounds[0][0])+":"+str(bounds[0][1]+1)
-
-            #this could fail - but shouldn't.
-            plnewtxs = self.api.address_transactions(address=addr, from_block=plfrom_block, to_block=str(bounds[1][0])+":"+str(bounds[1][1]))
-            if len(plnewtxs) > 0:
-                newlastblock = plnewtxs[-1].block_height
-                newlastindex = plnewtxs[-1].tx_index
-                handleDict["pastlocs"][addr][0] = [newlastblock, newlastindex]
-                allnewtxs[addr] = plnewtxs
-
-
-        #prune handleDict based on currentblock
-        if len(handleDict["pastlocs"])>0:
-            deladdrs=[]
-            latestblock = self.api.block_latest().height
-            for addr, bounds in handleDict["pastlocs"].items():
-                if bounds[1][0]<=latestblock:
-                    deladdrs.append(addr)
-            for addr in deladdrs:
-                del handleDict['pastlocs'][addr]
-
-        self.writeHandleLoc(handleDict)
+        print(f"No. Pulls:   {str(numpulls)}")
+        self.writePullsCount(numpulls+currpullscount)
 
 ############################################################################
 
-        #make use of the fact that the transaction that drops the handle at the location will always be filtered out by virtue of having an NFT in its output
-
-        #format of pendingTxList is [(senderaddr, pullyield(PERNIS), amountpaid(lovelace))]
-        print(f"\nTOKENS CNT:  {lastbalance}")
-        pendingTxList = []
-        NFTtxlog = []
-        badsends = 0
-        yieldthisloop = 0
-        numbersentthisloop = 0
-
-        for addr, addrnewtxs in allnewtxs.items():
-
-            for tx in addrnewtxs:
-                txutxos = None
-                attempt = 0
-                while txutxos is None:
-                    try:
-                        txutxos = self.api.transaction_utxos(hash=tx.tx_hash)
-                    except:
-                        attempt += 1
-                        print(f"UTXO fetch attempt {attempt} API Error - reattempting.")
-                        time.sleep(3)
-
-                #both of these are arrays
-                txinputs = txutxos.inputs
-                txoutputs = txutxos.outputs
-
-                incomingtx = False
-                outputshere = []
-                containsNFTs = False
-                #incoming or outgoing:
-                for output in txoutputs:
-                    if not containsNFTs:
-                        if output.address == addr:
-                            incomingtx = True
-                            #if has NFT:
-                            if len(output.amount) > 1:
-                                containsNFTs = True
-                            else:
-                                outputshere.append(int(output.amount[0].quantity))
-
-
-
-                #outputshere contains array of integers, lovelace content for each utxo
-                if incomingtx:
-                    if containsNFTs:
-                        NFTtxlog.append(tx.tx_hash)
-                    else:
-                        #multiutxo 1 means all utxos are treated as one chunks
-                        #multiutxo 0 means all utxos are treated separately
-                        #multiutxo 5 means utxos are treated separately up to a maximum of five chunks
-                        #partone is the chunk where every output is considered
-                        #parttwo is excess (to be returned)
-                        partone = []
-                        parttwo = []
-
-                        if multiutxo == 0 or multiutxo >= len(outputshere):
-                            partone = outputshere
-                        else:
-                            partone = outputshere[0:multiutxo]
-                            parttwo = outputshere[multiutxo:]
-
-                        #TODO: refactor pullprofit to be passed in, fix typing of profit
-                        #note pendingList already takes out one copy of pullprofit
-
-                        for utxoquant in partone:
-                            if utxoquant >= self.pullcost:
-                                validmults = min(multsallowed, utxoquant // self.pullcost)
-                                returnada = utxoquant - ((validmults-1)*self.pullprofitraw)
-                                randomyield = []
-
-                                for i in range(validmults):
-                                    localyield = self.calculateYield(self.proportionperpull, remainingtokens)
-                                    randomyield.append(localyield)
-                                    remainingtokens -= localyield
-
-                                pendingTxList.append((txinputs[0].address,sum(randomyield), returnada))
-                                yieldthisloop += sum(randomyield)
-                                numbersentthisloop += validmults
-
-                        for utxoquant in parttwo:
-                            if utxoquant >= self.pullcost:
-                                badsends += 1
-                                pendingTxList.append((txinputs[0].address,0, utxoquant + self.pullprofitraw))
-
-        if len(pendingTxList)>0:
-            self.autoSendAssets(pendingTxList, self.pullprofit, passphrase)
-
-        if remainingtokens != (lastbalance-yieldthisloop):
-            print(f"\nMismatch: Remtokens = {remainingtokens}, CalculatedBalance = {(lastbalance-yieldthisloop)}")
-
-        print(f"TOKENS SENT: {str(yieldthisloop)}")
-        self.writeAssetBalance(lastbalance-yieldthisloop)
-
-        if len(NFTtxlog)>0:
-            with open(self.tokenTxFile, 'a') as f:
-                f.write(f"\n{str(NFTtxlog)}")
-
-
-        print(f"No. Pulls:   {numbersentthisloop}")
-        print(f"Bad Pulls:   {badsends}")
-        self.writePullsCount(numbersentthisloop+currpullscount)
-
-
-
-    #pendingTxList of format list of tuples of (senderaddr, pullyield, amountpaid)
-    #
-    #profit is how much less ada to lock to each utxo compared to the input amount
-    #eg, for a locked ada difference of 0.4, a query of 2 will attach 1.6, whilst a query of 10 will attach 9.6
-
-    #NOTE!!: pendingTxList's amountpaid is in lovelaces, offest is in ADA
-    def autoSendAssets(self,pendingTxList, profit, passphrase):
+    def autoSendAssets(self,pendingTxList, passphrase):
         if self.bundlesize is None:
             self.bundlesize = 25
         groupsof = []
@@ -363,10 +180,11 @@ class Faucet:
         for groupof in groupsof:
             destinations = []
             for pendingtx in groupof:
-                if pendingtx[1]!=0:
-                    destinations.append((pendingtx[0], Decimal(str(pendingtx[-1]/1000000))-profit, [(self.assetIDObj,pendingtx[1])]))
+            #{"senderaddr": senderaddr, "pullyield": randomyield, "returnada": returnada}
+                if pendingtx['pullyield']!=0:
+                    destinations.append((pendingtx['senderaddr'], pendingtx['returnada'], [(self.assetIDObj,pendingtx['pullyield'])]))
                 else:
-                    destinations.append((pendingtx[0], Decimal(str(pendingtx[-1]/1000000))-profit))
+                    destinations.append((pendingtx['senderaddr'], pendingtx['returnada']))
 
             attempts = 0
             sent = False
@@ -375,37 +193,8 @@ class Faucet:
                 #if it still doesn't go through after 300 seconds of pause, the wallet has probably run out of funds, or the blockchain is
                 #ridiculously congested
                 try:
-
                     outboundtx = self.wallet.transfer_multiple(destinations, passphrase=passphrase)
                     sent = True
-
-                    #check for handle txs here
-                    if self.handlestr is not None:
-                        handleDest = self.checkTxHandle(self.handlestr, outboundtx)
-
-                        #handle has been moved to change address
-                        if handleDest:
-                            handleDict = self.readHandleLoc(self)
-                            #30 is placeholder number of blocks
-                            latestblock = self.api.block_latest().height
-                            blockscounttolerance = 100
-
-                            #keep in search registy for 40 blocks from here
-                            #list - from block, to block. to block does not change, is upper bound
-                            #tuples of height, index
-                            #can now handle this in same way as main faucet address
-
-                            #format is ["addr", ["blockheight", "index"]]
-
-                            handleDict['pastlocs'][handleDict['currentloc'][0]] = [(handleDict["currentloc"][1][0],handleDict["currentloc"][1][1]), (latestblock+blockscounttolerance, 0)]
-                            handleDict['currentloc'] = [handleDest, (100,0)]
-
-                            self.writeHandleLoc(handleDict)
-                            print(f"Handle {self.handlestr} was moved to {handleDest}")
-
-                        print(self.readHandleLoc())
-
-
                 except CannotCoverFee:
                     if attempts == 11:
                         raise CannotCoverFee("There is likely insufficient funds in your wallet to distribute the requested tokens.")
@@ -418,39 +207,22 @@ class Faucet:
                     time.sleep(30)
 
 
-
-    #returns address if handle was sent in the tx, or empty string if not
-    def checkTxHandle(self,handlestr, tx):
-        handleAssetID = AssetID(self.hexencode(handlestr),"f0ff48bbb7bbe9d59a40f1ce90e9e9d0ff5002ec48f232b49ca0fb9a")
-        handleDest = ""
-
-        #if no assets, then is empty list
-        for outputobj in tx.local_outputs:
-            if outputobj.assets:
-                for assetqtytuple in outputobj.assets:
-                    if assetqtytuple[0] == handleAssetID:
-                        handleDest = outputobj.address
-
-        return handleDest
-
-    def writeHandleLoc(self, datadict):
-        with open(f"{self.handlestr}handleloc.json", 'w') as f:
-            json.dump(datadict, f)
-
-    def readHandleLoc(self):
-        with open(f"{self.handlestr}handleloc.json", 'r') as f:
-            return json.load(f)
-
-
-
-
     #last PROCESSED SLOT
     #format is blockno:indexno
     #returns tuple! make sure you match
 
 #############################################################
-    def generateLog(self, initTokenbalance, blockHeight, txIndex, totalpulls):
-        logdict = {"tokenBalance": [initTokenbalance], "blockHeight": [blockHeight], "txIndex": [txIndex], "totalPulls": [totalpulls]}
+    @staticmethod
+    def dttodict(dt):
+        return {"year": dt.year, "month": dt.month, "day": dt.day,"hour": dt.hour, "minute": dt.minute, "second": dt.second,  "mus": dt.microsecond}
+
+    @staticmethod
+    def dicttodt(dtdict):
+        return datetime(dtdict['year'],dtdict['month'],dtdict['day'],dtdict['hour'],dtdict['minute'],dtdict['second'],dtdict['mus'])
+
+    def generateLog(self, initTokenbalance, totalpulls):
+        timenow = datetime.utcnow()
+        logdict = {"tokenBalance": [initTokenbalance], "txTime": [self.dttodict(timenow)], "totalPulls": [totalpulls]}
 
         with open(self.logFile, 'w') as f:
             json.dump(logdict, f)
@@ -462,23 +234,18 @@ class Faucet:
         with open(self.logFile, 'w') as f:
             json.dump(logDict, f)
 
-    def readIndex(self):
+    def rollbackTime(self):
         logDict = self.readLog()
-        return logDict['blockHeight'][-1], logDict['txIndex'][-1]
-
-    def writeIndex(self, blockno, txindex):
-        logDict = self.readLog()
-        logDict['blockHeight'].append(blockno)
-        logDict['txIndex'].append(txindex)
+        logDict['txTime'].append(logDict['txTime'][-2])
         self.writeLog(logDict)
 
-        print(f"SLOT SAVED:  "+str(blockno)+":"+str(txindex))
-
-    def rollbackIndex(self):
+    def readLastTime(self):
         logDict = self.readLog()
-        print(f"ROLLBACK:   "+str(logDict['blockHeight'][-2])+":"+str(logDict['txIndex'][-2]))
-        logDict['blockHeight'].append(logDict['blockHeight'][-2])
-        logDict['txIndex'].append(logDict['txIndex'][-2])
+        return self.dicttodt(logDict['txTime'][-1])
+
+    def writeLastTime(self, dt):
+        logDict = self.readLog()
+        logDict['txTime'].append(self.dttodict(dt))
         self.writeLog(logDict)
 
     def readAssetBalance(self):
