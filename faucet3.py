@@ -8,6 +8,7 @@ from blockfrost import BlockFrostApi, ApiError, ApiUrls
 from decimal import *
 import time
 from datetime import datetime
+from datetime import timedelta
 import random
 import json
 
@@ -90,11 +91,13 @@ class Faucet:
         if multsallowed < 1 or (not isinstance(multsallowed, int)):
             raise Exception("Illegal multsallowed parameter.")
 
-        try:            
+        try:
             remainingtokens = self.readAssetBalance()
             inittokens = remainingtokens
             currpullscount = self.readPullsCount()
             lasttime = self.readLastTime()
+            lastslot = self.readSlot()
+
         except FileNotFoundError:
             raise FileNotFoundError("You have not generated the blockchain index files. Please call generateLog.")
 
@@ -103,13 +106,20 @@ class Faucet:
 
         currenttime = datetime.utcnow()
         print(f"Time interval: {str(lasttime)[:-7]} to {str(currenttime)[:-7]}")
-        newtxs = self.wallet.txsfiltered(lasttime, currenttime)
-        self.writeLastTime(currenttime)
+        newtxs = self.wallet.txsfiltered(lasttime)
 
         incomingtxs = []
         for tx in newtxs:
-            if tx.local_inputs == []:
-                incomingtxs.append(tx)
+            if tx.inserted_at.absolute_slot > lastslot:
+                if tx.local_inputs == []:
+                    incomingtxs.append(tx)
+
+
+        if len(incomingtxs) > 0:
+            newlastslot = incomingtxs[-1].inserted_at.absolute_slot
+            newlasttime = self.isostringtodt(incomingtxs[-1].inserted_at.time)
+            self.writeLastTime(newlasttime)
+            self.writeSlot(newlastslot)
 
         sendlist=[]
         numpulls = 0
@@ -220,9 +230,14 @@ class Faucet:
     def dicttodt(dtdict):
         return datetime(dtdict['year'],dtdict['month'],dtdict['day'],dtdict['hour'],dtdict['minute'],dtdict['second'],dtdict['mus'])
 
+    @staticmethod
+    def isostringtodt(isostring):
+        return datetime(int(isostring[0:4]), int(isostring[5:7]), int(isostring[8:10]),int(isostring[11:13]),int(isostring[14:16]),int(isostring[17:19]),1)
+
+
     def generateLog(self, initTokenbalance, totalpulls):
         timenow = datetime.utcnow()
-        logdict = {"tokenBalance": [initTokenbalance], "txTime": [self.dttodict(timenow)], "totalPulls": [totalpulls]}
+        logdict = {"tokenBalance": [initTokenbalance], "txTime": [self.dttodict(timenow)], "totalPulls": [totalpulls], "slot":[1]}
 
         with open(self.logFile, 'w') as f:
             json.dump(logdict, f)
@@ -234,9 +249,10 @@ class Faucet:
         with open(self.logFile, 'w') as f:
             json.dump(logDict, f)
 
-    def rollbackTime(self):
+    def rollback(self):
         logDict = self.readLog()
         logDict['txTime'].append(logDict['txTime'][-2])
+        logDict['slot'].append(logDict['slot'][-2])
         self.writeLog(logDict)
 
     def readLastTime(self):
@@ -247,6 +263,16 @@ class Faucet:
         logDict = self.readLog()
         logDict['txTime'].append(self.dttodict(dt))
         self.writeLog(logDict)
+
+    def readSlot(self):
+        logDict = self.readLog()
+        return logDict['slot'][-1]
+
+    def writeSlot(self, slot):
+        logDict = self.readLog()
+        logDict['slot'].append(slot)
+        self.writeLog(logDict)
+
 
     def readAssetBalance(self):
         logDict = self.readLog()
