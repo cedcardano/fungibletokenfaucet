@@ -110,8 +110,9 @@ class Faucet:
 
         incomingtxs = []
         for tx in newtxs:
-            if tx.inserted_at.absolute_slot > lastslot:
-                if tx.local_inputs == []:
+            #local_inputs == [] means incoming transaction - these are necessarily confirmed already
+            if tx.local_inputs == []:
+                if tx.inserted_at.absolute_slot > lastslot:
                     incomingtxs.append(tx)
 
 
