@@ -313,3 +313,260 @@ class Faucet:
     @staticmethod
     def hexdecode(hexstr):
         return bytes.fromhex(hexstr).decode("utf-8")
+
+
+
+
+
+class Swapper:
+
+    #constructor
+    #apiKey: str - Blockfrost Api Key
+    #assetName: str - hex name of asset
+    #assetPolicyID: str - policy id of asset
+    #walletID: str - reference ID of wallet used by cardano-wallet
+    #faucetAddr: str - receiving address of faucet
+    #port: int - port that cardano-wallet is broadcasting on
+
+    def __init__(self, apiKey, receiveAssetName, receiveAssetPolicyID, sendAssetName,sendAssetPolicyID, walletID, swapperAddr,port=8090):
+        self.api = BlockFrostApi(project_id=apiKey)
+        self.wallet = Wallet(walletID, backend=WalletREST(port=port))
+
+        self.receiveAssetIDObj = AssetID(receiveAssetName,receiveAssetPolicyID)
+        self.sendAssetIDObj = AssetID(sendAssetName,sendAssetPolicyID)
+
+        self.swapperAddr = swapperAddr
+        self.bundlesize = None
+
+        self.logFile = receiveAssetName+receiveAssetPolicyID+sendAssetName+sendAssetPolicyID+swapperAddr+"swap.json"
+
+
+        print("Token swap service tool created.\n")
+
+
+
+    def runloop(self, passphrase, period=300,loops = 10000,bundlesize=20):
+        self.bundlesize = bundlesize
+
+        starttime = datetime.now()
+
+
+        for i in range(loops):
+            print(f"LOOP:        {i+1}")
+            timenow = datetime.now()
+            timenowstr = timenow.strftime("%H:%M:%S")
+            print(f"TIME:        {timenowstr}")
+            timediff = timenow - starttime
+            print(f"UPTIME:      {timediff}")
+
+            self.swaptokens(passphrase)
+            time.sleep(period)
+
+            print("\n\n")
+
+    def swaptokens(self,passphrase):
+
+        try:
+            remainingtokens = self.readAssetBalance()
+            lasttime = self.readLastTime()
+            lastslot = self.readSlot()
+
+        except FileNotFoundError:
+            raise FileNotFoundError("You have not generated the blockchain index files. Please call generateLog.")
+
+
+############################################################################################################
+
+        currenttime = datetime.utcnow()
+        print(f"Time interval: {str(lasttime)[:-7]} to {str(currenttime)[:-7]}")
+        newtxs = self.wallet.txsfiltered(lasttime)
+
+        incomingtxs = []
+        for tx in newtxs:
+            #local_inputs == [] means incoming transaction - these are necessarily confirmed already
+            if tx.local_inputs == []:
+                if tx.inserted_at.absolute_slot > lastslot:
+                    incomingtxs.append(tx)
+
+
+        if len(incomingtxs) > 0:
+            newlastslot = incomingtxs[-1].inserted_at.absolute_slot
+            newlasttime = self.isostringtodt(incomingtxs[-1].inserted_at.time)
+            self.writeLastTime(newlasttime)
+            self.writeSlot(newlastslot)
+
+        sendlist=[]
+        tokensswapped = 0
+
+
+        for tx in incomingtxs:
+            txoutputs = list(tx.local_outputs)
+
+            totalcorrecttokens = 0
+            totalada = Decimal(0)
+
+            containsAssets = False
+            for output in txoutputs:
+                totalada += output.amount
+                for assettuple in output.assets:
+                    if assettuple[0] == self.receiveAssetIDObj:
+                        containsAssets = True
+                        totalcorrecttokens += assettuple[1]
+
+
+            if containsAssets:
+                senderaddr = None
+                attempt = 0
+                while senderaddr is None:
+                    try:
+                        senderaddr = self.api.transaction_utxos(hash=tx.txid).inputs[0].address
+                    except ApiError:
+                        attempt += 1
+                        print(f"Sender address fetch attempt {attempt} API Error - reattempting.")
+                        time.sleep(3)
+
+                    sendlist.append({"senderaddr": senderaddr, "tokenpayload": totalcorrecttokens, "returnada": totalada})
+
+                    tokensswapped += totalcorrecttokens
+
+
+
+        if len(sendlist)>0:
+            self.autoSendAssets(sendlist, passphrase)
+
+
+        print(f"TKN SWAPPED: {str(tokensswapped)}")
+        self.writeAssetBalance(remainingtokens-tokensswapped)
+
+
+
+############################################################################
+
+    def autoSendAssets(self,pendingTxList, passphrase):
+        if self.bundlesize is None:
+            self.bundlesize = 25
+        groupsof = []
+        smallarray = []
+
+        #break into groups of bundlesize (25 by default) due to tx size constraints
+        for i in range(len(pendingTxList)):
+            if i == len(pendingTxList)-1:
+                smallarray.append(pendingTxList[i])
+                groupsof.append(smallarray)
+            else:
+                if len(smallarray)==self.bundlesize:
+                    groupsof.append(smallarray)
+                    smallarray = []
+                smallarray.append(pendingTxList[i])
+
+        for groupof in groupsof:
+            destinations = []
+            for pendingtx in groupof:
+            #{"senderaddr": senderaddr, "tokenpayload": randomyield, "returnada": returnada}
+                if pendingtx['tokenpayload']!=0:
+                    destinations.append((pendingtx['senderaddr'], pendingtx['returnada'], [(self.sendAssetIDObj,pendingtx['tokenpayload'])]))
+                else:
+                    destinations.append((pendingtx['senderaddr'], pendingtx['returnada']))
+
+            attempts = 0
+            sent = False
+            while not sent:
+                #loop 10 times, 30 seconds each, to give time for any pending transactions to be broadcast and free up UTXOs to build the next transaction
+                #if it still doesn't go through after 300 seconds of pause, the wallet has probably run out of funds, or the blockchain is
+                #ridiculously congested
+                try:
+                    self.wallet.transfer_multiple(destinations, passphrase=passphrase)
+                    sent = True
+                except CannotCoverFee:
+                    if attempts == 11:
+                        raise CannotCoverFee("There is likely insufficient funds in your wallet to distribute the requested tokens.")
+                    attempts += 1
+                    time.sleep(30)
+                except RESTServerError:
+                    if attempts == 11:
+                        raise RESTServerError("There are likely insufficient tokens in your wallet to distribute.")
+                    attempts += 1
+                    time.sleep(30)
+
+
+    #last PROCESSED SLOT
+    #format is blockno:indexno
+    #returns tuple! make sure you match
+
+#############################################################
+    @staticmethod
+    def dttodict(dt):
+        return {"year": dt.year, "month": dt.month, "day": dt.day,"hour": dt.hour, "minute": dt.minute, "second": dt.second,  "mus": dt.microsecond}
+
+    @staticmethod
+    def dicttodt(dtdict):
+        return datetime(dtdict['year'],dtdict['month'],dtdict['day'],dtdict['hour'],dtdict['minute'],dtdict['second'],dtdict['mus'])
+
+    @staticmethod
+    def isostringtodt(isostring):
+        return datetime(int(isostring[0:4]), int(isostring[5:7]), int(isostring[8:10]),int(isostring[11:13]),int(isostring[14:16]),int(isostring[17:19]),1)
+
+
+    def generateLog(self, initTokenbalance):
+        timenow = datetime.utcnow()
+        logdict = {"tokenBalance": [initTokenbalance], "txTime": [self.dttodict(timenow)], "slot":[1]}
+
+        with open(self.logFile, 'w') as f:
+            json.dump(logdict, f)
+
+    def readLog(self):
+        with open(self.logFile, 'r') as f:
+            return json.load(f)
+    def writeLog(self, logDict):
+        with open(self.logFile, 'w') as f:
+            json.dump(logDict, f)
+
+    def rollback(self):
+        logDict = self.readLog()
+        logDict['txTime'].append(logDict['txTime'][-2])
+        logDict['slot'].append(logDict['slot'][-2])
+        self.writeLog(logDict)
+
+    def readLastTime(self):
+        logDict = self.readLog()
+        return self.dicttodt(logDict['txTime'][-1])
+
+    def writeLastTime(self, dt):
+        logDict = self.readLog()
+        logDict['txTime'].append(self.dttodict(dt))
+        self.writeLog(logDict)
+
+    def readSlot(self):
+        logDict = self.readLog()
+        return logDict['slot'][-1]
+
+    def writeSlot(self, slot):
+        logDict = self.readLog()
+        logDict['slot'].append(slot)
+        self.writeLog(logDict)
+
+
+    def readAssetBalance(self):
+        logDict = self.readLog()
+        return logDict['tokenBalance'][-1]
+
+    def writeAssetBalance(self, balance):
+        logDict = self.readLog()
+        logDict['tokenBalance'].append(balance)
+        self.writeLog(logDict)
+
+        print(f"TOKENS REM:  {str(balance)}\n")
+
+
+###############################################################
+    #save processed transactions to file
+
+
+
+    @staticmethod
+    def hexencode(utf8str):
+        return utf8str.encode("utf-8").hex()
+
+    @staticmethod
+    def hexdecode(hexstr):
+        return bytes.fromhex(hexstr).decode("utf-8")
