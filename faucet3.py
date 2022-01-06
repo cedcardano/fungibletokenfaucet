@@ -83,9 +83,10 @@ class Faucet:
             print(f"UPTIME:      {timediff}")
 
             self.sendtokens(passphrase, multsallowed=multsallowed)
+            print("____________________________________________\n")
             time.sleep(period)
 
-            print("\n\n")
+
 
     def sendtokens(self,passphrase, multsallowed: int = 1):
         if multsallowed < 1 or (not isinstance(multsallowed, int)):
@@ -363,9 +364,10 @@ class Swapper:
             print(f"UPTIME:      {timediff}")
 
             self.swaptokens(passphrase)
+            print("____________________________________________\n")
             time.sleep(period)
 
-            print("\n\n")
+
 
     def swaptokens(self,passphrase):
 
