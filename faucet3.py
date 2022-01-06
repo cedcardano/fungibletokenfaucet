@@ -125,6 +125,7 @@ class Faucet:
         sendlist=[]
         numpulls = 0
         for tx in incomingtxs:
+
             txoutputs = list(tx.local_outputs)
 
             containsAssets = False
@@ -162,12 +163,14 @@ class Faucet:
         if len(sendlist)>0:
             self.autoSendAssets(sendlist, passphrase)
 
+            print(f"TOKENS SENT: {str(inittokens-remainingtokens)}")
+            self.writeAssetBalance(remainingtokens)
 
-        print(f"TOKENS SENT: {str(inittokens-remainingtokens)}")
-        self.writeAssetBalance(remainingtokens)
+            print(f"No. Pulls:   {str(numpulls)}")
+            self.writePullsCount(numpulls+currpullscount)
 
-        print(f"No. Pulls:   {str(numpulls)}")
-        self.writePullsCount(numpulls+currpullscount)
+
+
 
 ############################################################################
 
@@ -433,10 +436,12 @@ class Swapper:
 
         if len(sendlist)>0:
             self.autoSendAssets(sendlist, passphrase)
+            print(f"TKN SWAPPED: {str(tokensswapped)}")
+            self.writeAssetBalance(remainingtokens-tokensswapped)
 
 
-        print(f"TKN SWAPPED: {str(tokensswapped)}")
-        self.writeAssetBalance(remainingtokens-tokensswapped)
+            
+
 
 
 
