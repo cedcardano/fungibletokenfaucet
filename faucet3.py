@@ -13,14 +13,12 @@ import random
 import json
 import os
 
+#TODO CREATE A SUPERCLASS FOR FAUCET AND SWAP
+#Make print statements occur at the top level not the bottom
+#make the write to log methods return instead of print directly
+#make runloop able to access all the variables - maybe as in instance variable only used for logging
+#so reliability isn't strict
 
-#todo:find a neater way to pass in pullcost and pullprofit.
-#write documentation
-
-#instance variables:
-#self.api: Blockfrost SDK Api object
-#self.assetID: cardano.simpletypes AssetID object
-#self.wallet: cardano.wallet wallet object
 
 class Faucet:
 
@@ -68,11 +66,6 @@ class Faucet:
     #useful for testing throughput without wasting too much tx fees
     def runloop(self, passphrase, period=300,loops = 10000,bundlesize=20, multsallowed = 1):
         self.bundlesize = bundlesize
-        ## TODO:
-        #implement more intuitive ways to tweak the pullcost, pullprofit, proportionperpull  parameters. at the very least these should be passed in, not hardcoded
-        #implement ways to define different pull yield distribution types (fixed value or normal distribution) and diminishing returns mode (fixed or proportional to faucet contents)
-
-        starttime = datetime.now()
 
 
         for i in range(loops):
@@ -149,11 +142,15 @@ class Faucet:
                 if countedoutput.amount >= self.pullcost:
                     validmults = int(min(multsallowed, countedoutput.amount // self.pullcost))
                     returnada = countedoutput.amount - validmults*self.pullprofit
-                    randomyield = validmults*self.calculateYield(self.proportionperpull, remainingtokens)
-
+                    
+                    randomyield = 0
+                    for i in range(validmults):
+                        onetrial = self.calculateYield(self.proportionperpull, remainingtokens)
+                        remainingtokens -= onetrial
+                        randomyield += onetrial
+                    
                     sendlist.append({"senderaddr": senderaddr, "pullyield": randomyield, "returnada": returnada})
-
-                    remainingtokens -= randomyield
+                    
                     numpulls += validmults
                 for output in extraoutputs:
                     sendlist.append({"senderaddr": senderaddr, "pullyield": 0, "returnada": output.amount})
@@ -346,8 +343,6 @@ class Swapper:
 
     def runloop(self, passphrase, period=300,loops = 10000,bundlesize=20):
         self.bundlesize = bundlesize
-
-        starttime = datetime.now()
 
 
         for i in range(loops):
