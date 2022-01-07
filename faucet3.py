@@ -75,15 +75,13 @@ class Faucet:
 
 
         for i in range(loops):
-            print(f"LOOP:        {i+1}")
             timenow = datetime.now()
             timenowstr = timenow.strftime("%H:%M:%S")
             print(f"TIME:        {timenowstr}")
-            timediff = timenow - starttime
-            print(f"UPTIME:      {timediff}")
+
 
             self.sendtokens(passphrase, multsallowed=multsallowed)
-            print("____________________________________________\n")
+            print("___________________FAUCET___________________")
             time.sleep(period)
 
 
@@ -356,15 +354,13 @@ class Swapper:
 
 
         for i in range(loops):
-            print(f"LOOP:        {i+1}")
             timenow = datetime.now()
             timenowstr = timenow.strftime("%H:%M:%S")
             print(f"TIME:        {timenowstr}")
-            timediff = timenow - starttime
-            print(f"UPTIME:      {timediff}")
+
 
             self.swaptokens(passphrase)
-            print("____________________________________________\n")
+            print("____________________SWAP____________________")
             time.sleep(period)
 
 
