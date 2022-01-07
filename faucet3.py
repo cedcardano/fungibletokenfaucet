@@ -11,6 +11,7 @@ from datetime import datetime
 from datetime import timedelta
 import random
 import json
+import os
 
 
 #todo:find a neater way to pass in pullcost and pullprofit.
@@ -76,8 +77,7 @@ class Faucet:
 
         for i in range(loops):
             timenow = datetime.now()
-            timenowstr = timenow.strftime("%H:%M:%S")
-            print(f"TIME:        {timenowstr}")
+            print(f"SYS TIME:    {str(timenow)[:-7]}")
 
 
             self.sendtokens(passphrase, multsallowed=multsallowed)
@@ -104,7 +104,7 @@ class Faucet:
 ############################################################################################################
 
         currenttime = datetime.utcnow()
-        print(f"Time interval: {str(lasttime)[:-7]} to {str(currenttime)[:-7]}")
+        print(f"TIME INT:    {str(lasttime)[:-7]} to {str(currenttime)[:-7]}")
         newtxs = self.wallet.txsfiltered(lasttime)
 
         incomingtxs = []
@@ -317,9 +317,6 @@ class Faucet:
         return bytes.fromhex(hexstr).decode("utf-8")
 
 
-
-
-
 class Swapper:
 
     #constructor
@@ -355,8 +352,7 @@ class Swapper:
 
         for i in range(loops):
             timenow = datetime.now()
-            timenowstr = timenow.strftime("%H:%M:%S")
-            print(f"TIME:        {timenowstr}")
+            print(f"SYS TIME:    {str(timenow)[:-7]}")
 
 
             self.swaptokens(passphrase)
@@ -379,7 +375,7 @@ class Swapper:
 ############################################################################################################
 
         currenttime = datetime.utcnow()
-        print(f"Time interval: {str(lasttime)[:-7]} to {str(currenttime)[:-7]}")
+        print(f"TIME INT:    {str(lasttime)[:-7]} to {str(currenttime)[:-7]}")
         newtxs = self.wallet.txsfiltered(lasttime)
 
         incomingtxs = []
@@ -436,11 +432,6 @@ class Swapper:
             self.autoSendAssets(sendlist, passphrase)
             print(f"TKN SWAPPED: {str(tokensswapped)}")
             self.writeAssetBalance(remainingtokens-tokensswapped)
-
-
-            
-
-
 
 
 ############################################################################
