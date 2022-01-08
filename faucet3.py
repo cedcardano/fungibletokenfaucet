@@ -62,8 +62,6 @@ class Faucet:
     #for maximum throughput I would recommend having at least 500ADA in the wallet, or even 2000+ if you want to
     #loop 5 times a minute and approach Blockfrost's bottleneck of 500 tx per minute
 
-    #multi utxo support (first n outputs to count): 1 for no multiutxo, singular output, 5 for first five utxos, 0 for unlimited
-    #useful for testing throughput without wasting too much tx fees
     def runloop(self, passphrase, period=300,loops = 10000,bundlesize=20, multsallowed = 1):
         self.bundlesize = bundlesize
 
