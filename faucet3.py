@@ -280,12 +280,12 @@ class Faucet:
 
 
     def writeCompleteDiscordLog(self, completeDiscordLog):
-        with open("discordlog.json", 'w') as f:
+        with open(".\__log\discordlog.json", 'w') as f:
             json.dump(completeDiscordLog, f)
     
     def readCompleteDiscordLog(self):
-        if "discordlog.json" in os.listdir('.'):
-            with open("discordlog.json", 'r') as f:
+        if ".\__log\discordlog.json" in os.listdir('.'):
+            with open(".\__log\discordlog.json", 'r') as f:
                 return json.load(f)
         else:
             return {}
