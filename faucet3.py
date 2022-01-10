@@ -12,6 +12,7 @@ from datetime import timedelta
 import random
 import json
 import os
+import requests
 
 #TODO CREATE A SUPERCLASS FOR FAUCET AND SWAP
 #Make print statements occur at the top level not the bottom
@@ -30,12 +31,12 @@ class Faucet:
     #faucetAddr: str - receiving address of faucet
     #port: int - port that cardano-wallet is broadcasting on
 
-    def __init__(self, apiKey,assetName, assetPolicyID, walletID, faucetAddr,pullcost=2000000, pullprofit=500000, proportionperpull=0.000015, port=8090):
+    def __init__(self, apiKey,assetName, assetPolicyID, walletID, faucetAddr,pullcost=2000000, pullprofit=500000, proportionperpull=0.000015, port=8090, host="localhost", discord = False):
         self.api = BlockFrostApi(project_id=apiKey)
         self.assetName = assetName
         self.assetPolicyID = assetPolicyID
         self.assetIDObj = AssetID(assetName,assetPolicyID)
-        self.wallet = Wallet(walletID, backend=WalletREST(port=port))
+        self.wallet = Wallet(walletID, backend=WalletREST(port=port, host=host))
         self.faucetAddr = faucetAddr
         self.bundlesize = None
 
@@ -44,6 +45,9 @@ class Faucet:
         self.pullcost = Decimal(str(pullcost/1000000))
         self.proportionperpull = proportionperpull
         self.pullprofit = Decimal(str(pullprofit/1000000))
+
+        #serve on port localhost port 5001
+        self.discord = discord
 
         print("Faucet Created.\n")
 
@@ -112,9 +116,15 @@ class Faucet:
             self.writeLastTime(newlasttime)
             self.writeSlot(newlastslot)
 
+        #format {addr: [adacost, adacost]}
+        if self.discord:
+            completedDiscordPulls = self.readCompleteDiscordLog()
+
+
         sendlist=[]
         numpulls = 0
         for tx in incomingtxs:
+
 
             txoutputs = list(tx.local_outputs)
 
@@ -150,6 +160,24 @@ class Faucet:
                     sendlist.append({"senderaddr": senderaddr, "pullyield": randomyield, "returnada": returnada})
                     
                     numpulls += validmults
+
+                #discord case
+                elif self.discord:
+                    sessionsDict = requests.get("http://127.0.0.1:5001/sessions").json()
+                    if str(countedoutput.address) in sessionsDict:
+                        if str(int(countedoutput.amount*1000000)) in sessionsDict[str(countedoutput.address)]:
+                            if str(int(countedoutput.amount*1000000)) not in completedDiscordPulls:
+                                onetrial = self.calculateYield(self.proportionperpull, remainingtokens)
+                                absyield = int(round(onetrial*Decimal(sessionsDict[str(countedoutput.address)][str(int(countedoutput.amount*1000000))])))
+                                remainingtokens -= absyield
+
+                                sendlist.append({"senderaddr": senderaddr, "pullyield": absyield, "returnada": countedoutput.amount})
+
+                                if str(countedoutput.address) not in completedDiscordPulls:
+                                    completedDiscordPulls[str(countedoutput.address)] = [str(int(countedoutput.amount*1000000))]
+                                else:
+                                    completedDiscordPulls[str(countedoutput.address)].append(str(int(countedoutput.amount*1000000)))
+
                 for output in extraoutputs:
                     sendlist.append({"senderaddr": senderaddr, "pullyield": 0, "returnada": output.amount})
 
@@ -162,6 +190,9 @@ class Faucet:
 
             print(f"No. Pulls:   {str(numpulls)}")
             self.writePullsCount(numpulls+currpullscount)
+
+            if self.discord:
+                self.writeCompleteDiscordLog(completedDiscordPulls)
 
 
 
@@ -247,6 +278,20 @@ class Faucet:
         with open(self.logFile, 'w') as f:
             json.dump(logDict, f)
 
+
+    def writeCompleteDiscordLog(self, completeDiscordLog):
+        with open("discordlog.json", 'w') as f:
+            json.dump(completeDiscordLog, f)
+    
+    def readCompleteDiscordLog(self):
+        if "discordlog.json" in os.listdir('.'):
+            with open("discordlog.json", 'r') as f:
+                return json.load(f)
+        else:
+            return {}
+        
+
+
     def rollback(self):
         logDict = self.readLog()
         logDict['txTime'].append(logDict['txTime'][-2])
@@ -322,9 +367,9 @@ class Swapper:
     #faucetAddr: str - receiving address of faucet
     #port: int - port that cardano-wallet is broadcasting on
 
-    def __init__(self, apiKey, receiveAssetName, receiveAssetPolicyID, sendAssetName,sendAssetPolicyID, walletID, swapperAddr,port=8090):
+    def __init__(self, apiKey, receiveAssetName, receiveAssetPolicyID, sendAssetName,sendAssetPolicyID, walletID, swapperAddr,port=8090, host="localhost"):
         self.api = BlockFrostApi(project_id=apiKey)
-        self.wallet = Wallet(walletID, backend=WalletREST(port=port))
+        self.wallet = Wallet(walletID, backend=WalletREST(port=port, host=host))
 
         self.receiveAssetIDObj = AssetID(receiveAssetName,receiveAssetPolicyID)
         self.sendAssetIDObj = AssetID(sendAssetName,sendAssetPolicyID)
