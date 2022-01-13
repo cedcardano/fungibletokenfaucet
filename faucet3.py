@@ -139,9 +139,9 @@ class Faucet:
                 while senderaddr is None:
                     try:
                         senderaddr = self.api.transaction_utxos(hash=tx.txid).inputs[0].address
-                    except ApiError:
+                    except ApiError as e:
                         attempt += 1
-                        print(f"Sender address fetch attempt {attempt} API Error - reattempting.")
+                        print(f"Sender address fetch attempt {attempt} API Error {str(e)} - reattempting.")
                         time.sleep(3)
 
                 countedoutput = txoutputs[0]
