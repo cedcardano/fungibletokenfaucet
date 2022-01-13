@@ -141,7 +141,7 @@ class Faucet:
                         senderaddr = self.api.transaction_utxos(hash=tx.txid).inputs[0].address
                     except ApiError as e:
                         attempt += 1
-                        print(f"Sender address fetch attempt {attempt} API Error {str(e)} - reattempting.")
+                        print(f"Sender address fetch attempt {attempt} API Error {str(e.status_code)} - reattempting.")
                         time.sleep(3)
 
                 countedoutput = txoutputs[0]
@@ -457,7 +457,7 @@ class Swapper:
                         senderaddr = self.api.transaction_utxos(hash=tx.txid).inputs[0].address
                     except ApiError as e:
                         attempt += 1
-                        print(f"Sender address fetch attempt {attempt} API Error {str(e)} - reattempting.")
+                        print(f"Sender address fetch attempt {attempt} API Error {str(e.status_code)} - reattempting.")
                         time.sleep(3)
 
                     sendlist.append({"senderaddr": senderaddr, "tokenpayload": totalcorrecttokens, "returnada": totalada})
