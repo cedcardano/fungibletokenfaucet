@@ -123,6 +123,10 @@ class Faucet:
 
         sendlist=[]
         numpulls = 0
+
+        assetFilteredTxs = []
+        assetFilteredTxids = []
+
         for tx in incomingtxs:
 
 
@@ -133,53 +137,91 @@ class Faucet:
                 if output.assets != []:
                     containsAssets = True
 
+            ########## want to keep tx with assets or not? #####
             if not containsAssets:
-                senderaddr = None
-                attempt = 0
-                while senderaddr is None:
-                    try:
-                        senderaddr = self.api.transaction_utxos(hash=tx.txid).inputs[0].address
-                    except ApiError as e:
-                        attempt += 1
-                        print(f"Sender address fetch attempt {attempt} API Error {str(e.status_code)} - reattempting.")
-                        time.sleep(3)
+                assetFilteredTxs.append(tx)
+                assetFilteredTxids.append(tx.txid)
 
-                countedoutput = txoutputs[0]
-                extraoutputs = txoutputs[1:]
+######## GET SENDER ADDRESSES ##########
 
-                if countedoutput.amount >= self.pullcost:
-                    validmults = int(min(multsallowed, countedoutput.amount // self.pullcost))
-                    returnada = countedoutput.amount - validmults*self.pullprofit
+        senderaddrdict = {}
+
+        ####### try koios address ######
+        koiosrequest = self.koios_tx_utxos(assetFilteredTxids)
+
+        #dict of txid, addr
+        if koiosrequest.status_code == 200:
+            koiosReturn = koiosrequest.json()
+            
+            #elem is dict for a single transaction
+            for txdict in koiosReturn:
+                senderaddrdict[txdict['tx_hash']] = txdict['inputs'][0]['payment_addr']['bech32']
+
+
+        else:
+            print(f"Koios group request failed - reattempting individually.")
+            #try for each, then blockfrost
+            for txid in assetFilteredTxids:
+                koiosindivrequest = self.koios_tx_utxos([txid])                
+                if koiosindivrequest.status_code == 200:
+                    senderaddrdict[txid] = koiosindivrequest.json()[0]['inputs'][0]['payment_addr']['bech32']
+
+                #blockfrost
+                else:
+                    (f"Koios individually request failed - reattempting with Blockfrost.")
+                    senderaddress = None
+                    attempt = 0
+                    while senderaddress is None:
+                        try:
+                            senderaddress = self.api.transaction_utxos(hash=txid).inputs[0].address
+                        except ApiError as e:
+                            attempt += 1
+                            print(f"Blockfrost sender address fetch attempt {attempt} API Error {str(e.status_code)} - reattempting.")
+                            time.sleep(3)
                     
-                    randomyield = 0
-                    for i in range(validmults):
-                        onetrial = self.calculateYield(self.proportionperpull, remainingtokens)
-                        remainingtokens -= onetrial
-                        randomyield += onetrial
+                    senderaddrdict[txid] = senderaddress
+                            
+####################### PROCESS FOR FUNDS ########################
+
+        for tx in assetFilteredTxs:            
+            senderaddr = senderaddrdict[tx.txid]
+
+            countedoutput = txoutputs[0]
+            extraoutputs = txoutputs[1:]
+
+            if countedoutput.amount >= self.pullcost:
+                validmults = int(min(multsallowed, countedoutput.amount // self.pullcost))
+                returnada = countedoutput.amount - validmults*self.pullprofit
                     
-                    sendlist.append({"senderaddr": senderaddr, "pullyield": randomyield, "returnada": returnada})
+                randomyield = 0
+                for i in range(validmults):
+                    onetrial = self.calculateYield(self.proportionperpull, remainingtokens)
+                    remainingtokens -= onetrial
+                    randomyield += onetrial
                     
-                    numpulls += validmults
+                sendlist.append({"senderaddr": senderaddr, "pullyield": randomyield, "returnada": returnada})
+                    
+                numpulls += validmults
 
-                #discord case
-                elif self.discord:
-                    sessionsDict = requests.get("http://127.0.0.1:5001/sessions").json()
-                    if str(countedoutput.address) in sessionsDict:
-                        if str(int(countedoutput.amount*1000000)) in sessionsDict[str(countedoutput.address)]:
-                            if str(int(countedoutput.amount*1000000)) not in completedDiscordPulls:
-                                onetrial = self.calculateYield(self.proportionperpull, remainingtokens)
-                                absyield = int(round(onetrial*Decimal(sessionsDict[str(countedoutput.address)][str(int(countedoutput.amount*1000000))])))
-                                remainingtokens -= absyield
+            #discord case
+            elif self.discord:
+                sessionsDict = requests.get("http://127.0.0.1:5001/sessions").json()
+                if str(countedoutput.address) in sessionsDict:
+                    if str(int(countedoutput.amount*1000000)) in sessionsDict[str(countedoutput.address)]:
+                        if str(int(countedoutput.amount*1000000)) not in completedDiscordPulls:
+                            onetrial = self.calculateYield(self.proportionperpull, remainingtokens)
+                            absyield = int(round(onetrial*Decimal(sessionsDict[str(countedoutput.address)][str(int(countedoutput.amount*1000000))])))
+                            remainingtokens -= absyield
 
-                                sendlist.append({"senderaddr": senderaddr, "pullyield": absyield, "returnada": countedoutput.amount})
+                            sendlist.append({"senderaddr": senderaddr, "pullyield": absyield, "returnada": countedoutput.amount})
 
-                                if str(countedoutput.address) not in completedDiscordPulls:
-                                    completedDiscordPulls[str(countedoutput.address)] = [str(int(countedoutput.amount*1000000))]
-                                else:
-                                    completedDiscordPulls[str(countedoutput.address)].append(str(int(countedoutput.amount*1000000)))
+                            if str(countedoutput.address) not in completedDiscordPulls:
+                                completedDiscordPulls[str(countedoutput.address)] = [str(int(countedoutput.amount*1000000))]
+                            else:
+                                completedDiscordPulls[str(countedoutput.address)].append(str(int(countedoutput.amount*1000000)))
 
-                for output in extraoutputs:
-                    sendlist.append({"senderaddr": senderaddr, "pullyield": 0, "returnada": output.amount})
+            for output in extraoutputs:
+                sendlist.append({"senderaddr": senderaddr, "pullyield": 0, "returnada": output.amount})
 
 
         if len(sendlist)>0:
@@ -249,6 +291,12 @@ class Faucet:
     #last PROCESSED SLOT
     #format is blockno:indexno
     #returns tuple! make sure you match
+
+    @staticmethod
+    def koios_tx_utxos(txhashlist):
+        koiosrequest = requests.post("https://api.koios.rest/api/v0/tx_utxos", json={"_tx_hashes":txhashlist})
+        return koiosrequest
+
 
 #############################################################
     @staticmethod
