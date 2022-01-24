@@ -187,6 +187,7 @@ class Faucet:
             try:            
                 senderaddr = senderaddrdict[tx.txid]
             except KeyError:
+                (f"Koios group request failed - reattempting with Blockfrost.")
                 senderaddr = None
                 attempt = 0
                 while senderaddr is None:
