@@ -184,6 +184,7 @@ class Faucet:
 ####################### PROCESS FOR FUNDS ########################
 
         for tx in assetFilteredTxs:
+            
             try:            
                 senderaddr = senderaddrdict[tx.txid]
             except KeyError:
@@ -198,6 +199,8 @@ class Faucet:
                         print(f"Blockfrost sender address fetch attempt {attempt} API Error {str(e.status_code)} - reattempting.")
                         time.sleep(3)
 
+            txoutputs = list(tx.local_outputs)
+            
             countedoutput = txoutputs[0]
             extraoutputs = txoutputs[1:]
 
