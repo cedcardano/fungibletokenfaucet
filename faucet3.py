@@ -191,7 +191,7 @@ class Faucet:
                 attempt = 0
                 while senderaddr is None:
                     try:
-                        senderaddr = self.api.transaction_utxos(hash=txid).inputs[0].address
+                        senderaddr = self.api.transaction_utxos(hash=tx.txid).inputs[0].address
                     except ApiError as e:
                         attempt += 1
                         print(f"Blockfrost sender address fetch attempt {attempt} API Error {str(e.status_code)} - reattempting.")
