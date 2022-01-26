@@ -1,578 +1,667 @@
 from cardano.wallet import Wallet
-from decimal import *
+from cardano.wallet import WalletService
 from cardano.backends.walletrest import WalletREST
-from cardano.numbers import from_lovelaces
 from cardano.simpletypes import AssetID
-from cardano.backends.walletrest.exceptions import *
-from cardano.exceptions import *
-import getpass
-import decimal
-import math
+from cardano.exceptions import CannotCoverFee
+from cardano.backends.walletrest.exceptions import RESTServerError
+from blockfrost import BlockFrostApi, ApiError, ApiUrls
+from decimal import *
+import time
+from datetime import datetime
+from datetime import timedelta
+import random
+import json
+import os
+import requests
 
+#TODO CREATE A SUPERCLASS FOR FAUCET AND SWAP
+#Make print statements occur at the top level not the bottom
+#make the write to log methods return instead of print directly
+#make runloop able to access all the variables - maybe as in instance variable only used for logging
+#so reliability isn't strict
 
-def multi_send(wallet):
-    logstring = ""
-    assetDict = None
-    
 
-    destAddr = input("\nEnter the destination address: ")
-    assetsToSendDict = {}
-    minAda = False
-    
-    sendAmountPrompt = input("Enter ADA Amount to be sent, or type 'min' to calculate based on selected tokens: ")
-    
+class Faucet:
 
-    
-    if sendAmountPrompt == "min":
-        minAda = True
-    else:
-        try:       
-            sendAmount = Decimal(str(round(float(sendAmountPrompt),6)))
-        except decimal.InvalidOperation:
-            return "Invalid ADA quantity. Please try again."
-        except ValueError:
-            return "Invalid ADA quantity. Please try again."
+    #constructor
+    #apiKey: str - Blockfrost Api Key
+    #assetName: str - hex name of asset
+    #assetPolicyID: str - policy id of asset
+    #walletID: str - reference ID of wallet used by cardano-wallet
+    #faucetAddr: str - receiving address of faucet
+    #port: int - port that cardano-wallet is broadcasting on
 
-    addMoreTokens = True
-    
-    while addMoreTokens:      
-        tokenPrompt = input("\nType a (case-sensitive) token name, or press enter if you are done adding tokens: ")
-        assetIDObjGlob = None
+    def __init__(self, apiKey,assetName, assetPolicyID, walletID, faucetAddr,pullcost=2000000, pullprofit=500000, proportionperpull=0.000015, port=8090, host="localhost", discord = False):
+        self.api = BlockFrostApi(project_id=apiKey)
+        self.assetName = assetName
+        self.assetPolicyID = assetPolicyID
+        self.assetIDObj = AssetID(assetName,assetPolicyID)
+        self.wallet = Wallet(walletID, backend=WalletREST(port=port, host=host))
+        self.faucetAddr = faucetAddr
+        self.bundlesize = None
 
-        if tokenPrompt != "":
-            if assetDict is None:
-                assetDict = wallet.assets()
-                hexAssetNames = [assetTuple[0].asset_name for assetTuple in assetDict.items()]
-                assetNameCollisionDict = {}
-                for assetIDObj in assetDict:
-                    if assetIDObj.asset_name not in assetNameCollisionDict:
-                        assetNameCollisionDict[assetIDObj.asset_name] = [assetIDObj.policy_id]
-                    else:
-                        assetNameCollisionDict[assetIDObj.asset_name].append(assetIDObj.policy_id)
-            
-            numNames = hexAssetNames.count(toHex(tokenPrompt))
+        self.logFile = assetName+assetPolicyID+faucetAddr+"v2.json"
 
-            if numNames == 0:
-                print("You do not own an asset with this name. Please try again.\n")              
+        self.pullcost = Decimal(str(pullcost/1000000))
+        self.proportionperpull = proportionperpull
+        self.pullprofit = Decimal(str(pullprofit/1000000))
 
-            elif numNames > 1:
-                print("There are multiple policy IDs with this token name:\n\n")
-                for policyID in assetNameCollisionDict[toHex(tokenPrompt)]:
-                    print(policyID)
-                print("\n")
+        #serve on port localhost port 5001
+        self.discord = discord
 
-                specifiedPolicyID = input("Please enter the policy ID: ")
-                if specifiedPolicyID not in assetNameCollisionDict[toHex(tokenPrompt)]:
-                    print("Policy ID does not exist for this token name. Please try again.\n")
-                else:
-                    assetIDObjGlob = AssetID(toHex(tokenPrompt), specifiedPolicyID)
+        print("Faucet Created.\n")
 
-            else:
-                assetIDObjGlob = AssetID(toHex(tokenPrompt), assetNameCollisionDict[toHex(tokenPrompt)][0])
-        else:
-            addMoreTokens = False
-            
-        if assetIDObjGlob is not None:
 
-            tokenBalance = assetDict[assetIDObjGlob].available
-            print(f"Token account balance: {str(tokenBalance)}")
-            valid = True
-            try:
-                amountSend = int(input("Enter the number of tokens to send: "))
-            except ValueError:
-                print("The value you have entered is not valid.")
-                valid = False            
-            if amountSend < 0 or amountSend > tokenBalance:
-                print("The value you have entered is not valid.")
-                valid = False                   
-            if valid:
-                assetsToSendDict[assetIDObjGlob] = amountSend
 
-    sequenceOfAssetPairs = []
-    for assetIDObj, amountSend in assetsToSendDict.items():
-        if amountSend != 0:
-            sequenceOfAssetPairs.append((assetIDObj, amountSend))
+    #the faucet requires at least the very least 3*bundlesize ADA to function (more if your tokens are bundled with more than ~1.5ADA for each output),
+    #but throughput is greatly increased when there is more spare ADA in the wallet
+    #due to increased fragmentation and therefore there are lots of UTXOs to select from.
+    #throughput may be slow at first if your ADA is in a big chunk,
+    #but should increase as UTXOs are increasingly fragmented and the risk of contention is reduced.
+    #you can fragment the ADA yourself by breaking it into smaller UTXO chunks, but every distribution of 25 token UTXOs
+    #comes with 25 change UTXOs, so fragmentation should happen by itself fairly quickly.
+    #you can reduce bundlesize to reduce the minimum amount of ADA needed to operate, but this increases the number of transactions needed
+    # and thus fees. Do NOT increase bundlesize past 25 - higher amounts risk transactions failing due to exceeding size limitations.
 
-    if minAda:
-        if not sequenceOfAssetPairs:
-            sendAmount = Decimal(1)
-        else:
-            numAssets = len(sequenceOfAssetPairs)
-            sumAssetNameLengths = sum([len(assetIDObj.asset_name)/2 for assetIDObj, amountSend in sequenceOfAssetPairs])
-            numPolicyIDs = len(list(dict.fromkeys([assetIDObj.policy_id for assetIDObj, amountSend in sequenceOfAssetPairs]))) 
+    #for maximum throughput I would recommend having at least 500ADA in the wallet, or even 2000+ if you want to
+    #loop 5 times a minute and approach Blockfrost's bottleneck of 500 tx per minute
 
-            minBundledLovelace = 34482*(27+6+math.ceil((12*numAssets+sumAssetNameLengths+28*numPolicyIDs)/8))
-            sendAmount = from_lovelaces(minBundledLovelace)
+    def runloop(self, passphrase, period=300,loops = 10000,bundlesize=20, multsallowed = 1):
+        self.bundlesize = bundlesize
 
-    msgMetadata = None
-    msgMetadataString = input("\nType transaction message metadata, or Enter to skip: ")
-    if msgMetadataString:
-        msgMetadata = {674: {"msg": [msgMetadataString[i:i+64] for i in range(0, len(msgMetadataString), 64)]}}
-  
-    print("\nPROPOSED TRANSACTION")
-    print(f"Destination:      {destAddr}")
-    print(f"ADA to be sent:   {str(sendAmount)} ADA")
 
-    if sequenceOfAssetPairs:
-        destinations = [(destAddr, sendAmount, sequenceOfAssetPairs)]
-    else:
-        destinations = [(destAddr, sendAmount)]
+        for i in range(loops):
+            timenow = datetime.now()
+            print(f"SYS TIME:    {str(timenow)[:-7]}")
 
 
-    avgFee = estimate_fee_endpoint(destinations, msgMetadata, wallet)
+            self.sendtokens(passphrase, multsallowed=multsallowed)
+            print("___________________FAUCET___________________")
+            time.sleep(period)
 
-    if avgFee is None:
-        return logstring
 
-    print(f"Estimated fee:    {str(avgFee)} ADA")
-    print(f"Total ADA Cost:   {str(avgFee+sendAmount)} ADA")
 
-    if msgMetadataString:
-        print(f"\nMetadata:   {msgMetadataString}\n")
+    def sendtokens(self,passphrase, multsallowed: int = 1):
+        if multsallowed < 1 or (not isinstance(multsallowed, int)):
+            raise Exception("Illegal multsallowed parameter.")
 
-    if sequenceOfAssetPairs:
-        print("           Tokens           ")
-
-        proposedTokenTable = [[fromHex(assetIDObj.asset_name), str(balanceObj)] 
-                            if hexAssetNames.count(assetIDObj.asset_name) == 1 
-                            else [f"{fromHex(assetIDObj.asset_name)}:{assetIDObj.policy_id[:16]}", str(balanceObj)] 
-                            for assetIDObj, balanceObj in assetsToSendDict.items()
-                            if balanceObj > 0]
-        proposedTokenTable.insert(0,["TOKEN", "AMOUNT"])
-        col_width = max(len(word) for row in proposedTokenTable for word in row) + 10
-        proposedTokenTable.insert(1,["-"*col_width, "-"*col_width])
-        
-
-        for row in proposedTokenTable:
-            print("".join(word.ljust(col_width) for word in row))
-        
-        print("\n")
-
-        
-
-    passphrase = getpass.getpass("Enter your passphrase to send, or type 'cancel' to abort: ")
-    if passphrase == "cancel":
-        return "Transaction aborted. Funds were not sent."
-
-    params =    {
-                    "destinations"      : destinations,
-                    "metadata"          : msgMetadata,
-                    "allow_withdrawal"  : True,
-                    "ttl"               : None,
-                    "passphrase"        : passphrase
-                }
-    
-    tx = send_endpoint(params, wallet)
-    if tx:
-        logstring += f"Transaction {tx.txid} has been sent.\n\n"
-        logstring += f"https://cardanoscan.io/transaction/{tx.txid}"
-
-    return logstring
-
-
-def basic_send(wallet):
-    logstring = ""
-    assetDict = None
-    
-
-    destAddr = input("\nEnter the destination address: ")
-    assetsToSendDict = {}
-    minAda = False
-    
-    sendAmountPrompt = input("Enter ADA Amount to be sent, or type 'min' to calculate based on selected tokens: ")
-    
-
-    
-    if sendAmountPrompt == "min":
-        minAda = True
-    else:
-        try:       
-            sendAmount = Decimal(str(round(float(sendAmountPrompt),6)))
-        except decimal.InvalidOperation:
-            return "Invalid ADA quantity. Please try again."
-        except ValueError:
-            return "Invalid ADA quantity. Please try again."
-
-    addMoreTokens = True
-    
-    while addMoreTokens:      
-        tokenPrompt = input("\nType a (case-sensitive) token name, or press enter if you are done adding tokens: ")
-        assetIDObjGlob = None
-
-        if tokenPrompt != "":
-            if assetDict is None:
-                assetDict = wallet.assets()
-                hexAssetNames = [assetTuple[0].asset_name for assetTuple in assetDict.items()]
-                assetNameCollisionDict = {}
-                for assetIDObj in assetDict:
-                    if assetIDObj.asset_name not in assetNameCollisionDict:
-                        assetNameCollisionDict[assetIDObj.asset_name] = [assetIDObj.policy_id]
-                    else:
-                        assetNameCollisionDict[assetIDObj.asset_name].append(assetIDObj.policy_id)
-            
-            numNames = hexAssetNames.count(toHex(tokenPrompt))
-
-            if numNames == 0:
-                print("You do not own an asset with this name. Please try again.\n")              
-
-            elif numNames > 1:
-                print("There are multiple policy IDs with this token name:\n\n")
-                for policyID in assetNameCollisionDict[toHex(tokenPrompt)]:
-                    print(policyID)
-                print("\n")
-
-                specifiedPolicyID = input("Please enter the policy ID: ")
-                if specifiedPolicyID not in assetNameCollisionDict[toHex(tokenPrompt)]:
-                    print("Policy ID does not exist for this token name. Please try again.\n")
-                else:
-                    assetIDObjGlob = AssetID(toHex(tokenPrompt), specifiedPolicyID)
-
-            else:
-                assetIDObjGlob = AssetID(toHex(tokenPrompt), assetNameCollisionDict[toHex(tokenPrompt)][0])
-        else:
-            addMoreTokens = False
-            
-        if assetIDObjGlob is not None:
-
-            tokenBalance = assetDict[assetIDObjGlob].available
-            print(f"Token account balance: {str(tokenBalance)}")
-            valid = True
-
-            amountSendPrompt = input("Enter the number of tokens to send, or type 'max' to send all tokens of this type: ")
-
-            if amountSendPrompt == 'max':
-                amountSend = tokenBalance
-            else:
-                try:
-                    amountSend = int(input(amountSendPrompt))
-                except ValueError:
-                    print("The value you have entered is not valid.")
-                    valid = False            
-                if amountSend < 0 or amountSend > tokenBalance:
-                    print("The value you have entered is not valid.")
-                    valid = False                   
-            if valid:
-                assetsToSendDict[assetIDObjGlob] = amountSend
-
-    sequenceOfAssetPairs = []
-    for assetIDObj, amountSend in assetsToSendDict.items():
-        if amountSend != 0:
-            sequenceOfAssetPairs.append((assetIDObj, amountSend))
-
-    if minAda:
-        if not sequenceOfAssetPairs:
-            sendAmount = Decimal(1)
-        else:
-            numAssets = len(sequenceOfAssetPairs)
-            sumAssetNameLengths = sum([len(assetIDObj.asset_name)/2 for assetIDObj, amountSend in sequenceOfAssetPairs])
-            numPolicyIDs = len(list(dict.fromkeys([assetIDObj.policy_id for assetIDObj, amountSend in sequenceOfAssetPairs]))) 
-
-            minBundledLovelace = 34482*(27+6+math.ceil((12*numAssets+sumAssetNameLengths+28*numPolicyIDs)/8))
-            sendAmount = from_lovelaces(minBundledLovelace)
-
-    msgMetadata = None
-    msgMetadataString = input("\nType transaction message metadata, or Enter to skip: ")
-    if msgMetadataString:
-        msgMetadata = {674: {"msg": [msgMetadataString[i:i+64] for i in range(0, len(msgMetadataString), 64)]}}
-  
-    print("\nPROPOSED TRANSACTION")
-    print(f"Destination:      {destAddr}")
-    print(f"ADA to be sent:   {str(sendAmount)} ADA")
-
-    if sequenceOfAssetPairs:
-        destinations = [(destAddr, sendAmount, sequenceOfAssetPairs)]
-    else:
-        destinations = [(destAddr, sendAmount)]
-
-
-    avgFee = estimate_fee_endpoint(destinations, msgMetadata, wallet)
-
-    if avgFee is None:
-        return logstring
-
-    print(f"Estimated fee:    {str(avgFee)} ADA")
-    print(f"Total ADA Cost:   {str(avgFee+sendAmount)} ADA")
-
-    if msgMetadataString:
-        print(f"\nMetadata:   {msgMetadataString}\n")
-
-    if sequenceOfAssetPairs:
-        print("           Tokens           ")
-
-        proposedTokenTable = [[fromHex(assetIDObj.asset_name), str(balanceObj)] 
-                            if hexAssetNames.count(assetIDObj.asset_name) == 1 
-                            else [f"{fromHex(assetIDObj.asset_name)}:{assetIDObj.policy_id[:16]}", str(balanceObj)] 
-                            for assetIDObj, balanceObj in assetsToSendDict.items()
-                            if balanceObj > 0]
-        proposedTokenTable.insert(0,["TOKEN", "AMOUNT"])
-        col_width = max(len(word) for row in proposedTokenTable for word in row) + 10
-        proposedTokenTable.insert(1,["-"*col_width, "-"*col_width])
-        
-
-        for row in proposedTokenTable:
-            print("".join(word.ljust(col_width) for word in row))
-        
-        print("\n")
-
-        
-
-    passphrase = getpass.getpass("Enter your passphrase to send, or type 'cancel' to abort: ")
-    if passphrase == "cancel":
-        return "Transaction aborted. Funds were not sent."
-
-    params =    {
-                    "destinations"      : destinations,
-                    "metadata"          : msgMetadata,
-                    "allow_withdrawal"  : True,
-                    "ttl"               : None,
-                    "passphrase"        : passphrase
-                }
-    
-    tx = send_endpoint(params, wallet)
-    if tx:
-        logstring += f"Transaction {tx.txid} has been sent.\n\n"
-        logstring += f"https://cardanoscan.io/transaction/{tx.txid}"
-
-    return logstring
-
-
-
-def send_all(wallet):
-    logstring = ""
-    assetDict = wallet.assets()
-
-    balance = wallet.balance().total
-
-    destAddr = input("\nEnter the destination address: ")
-
-    sequenceOfAssetPairs = []
-    for assetIDObj, amountSend in assetDict.items():
-        if amountSend.available != 0:
-            sequenceOfAssetPairs.append((assetIDObj, amountSend.available))
-
-    msgMetadata = None
-    msgMetadataString = input("\nType transaction message metadata, or Enter to skip: ")
-    if msgMetadataString:
-        msgMetadata = {674: {"msg": [msgMetadataString[i:i+64] for i in range(0, len(msgMetadataString), 64)]}}
-  
-    if sequenceOfAssetPairs:
-        destinations = [(destAddr, balance, sequenceOfAssetPairs)]
-    else:
-        destinations = [(destAddr, balance)]
-
-    avgFee = estimate_fee_endpoint(destinations, msgMetadata, wallet)
-
-    if avgFee is None:
-        return logstring
-
-    sendAmount = balance - avgFee
-
-    if sequenceOfAssetPairs:
-        destinations = [(destAddr, sendAmount, sequenceOfAssetPairs)]
-    else:
-        destinations = [(destAddr, sendAmount)]
-
-    print("\nPROPOSED TRANSACTION")
-    print(f"Destination:      {destAddr}")
-    print(f"ADA to be sent:   {str(sendAmount)} ADA")
-    print(f"Estimated fee:    {str(avgFee)} ADA")
-    print(f"Total ADA Cost:   {str(avgFee+sendAmount)} ADA")
-
-    if msgMetadataString:
-        print(f"\nMetadata:   {msgMetadataString}\n")
-
-    if sequenceOfAssetPairs:
-
-        hexAssetNames = [assetTuple[0].asset_name for assetTuple in assetDict.items()]
-
-        print("           Tokens           ")
-
-        proposedTokenTable = [[fromHex(assetIDObj.asset_name), str(balanceObj.available)] 
-                            if hexAssetNames.count(assetIDObj.asset_name) == 1 
-                            else [f"{fromHex(assetIDObj.asset_name)}:{assetIDObj.policy_id[:16]}", str(balanceObj.available)] 
-                            for assetIDObj, balanceObj in assetDict.items()
-                            if balanceObj.available > 0]
-        proposedTokenTable.insert(0,["TOKEN", "AMOUNT"])
-        col_width = max(len(word) for row in proposedTokenTable for word in row) + 10
-        proposedTokenTable.insert(1,["-"*col_width, "-"*col_width])
-        
-
-        for row in proposedTokenTable:
-            print("".join(word.ljust(col_width) for word in row))
-        
-        print("\n")
-
-
-    passphrase = getpass.getpass("YOU ARE SENDING ALL ADA AND TOKENS IN YOUR WALLET.\n\nEnter your passphrase to send, or type 'cancel' to abort: ")
-    if passphrase == "cancel":
-        return "Transaction aborted. Funds were not sent."
-
-    params =    {
-                    "destinations"      : destinations,
-                    "metadata"          : msgMetadata,
-                    "allow_withdrawal"  : True,
-                    "ttl"               : None,
-                    "passphrase"        : passphrase
-                }
-    
-    tx = send_endpoint(params, wallet)
-    if tx:
-        logstring += f"Transaction {tx.txid} has been sent.\n\n"
-        logstring += f"https://cardanoscan.io/transaction/{tx.txid}"
-
-    return logstring
-
-def estimate_fee_endpoint(destinations, metadata, wallet):
-    try:
-        avgFeeTuple = wallet.estimate_fee(destinations, metadata = metadata)
-        return avgFeeTuple[0]
-
-    except BadRequest as e:
-        print(e)
-        print("\nA destination address is likely malformed. Please try again.")
-    except CannotCoverFee as e:
-        print(e)
-        print("\nYou likely do not have enough funds to complete the transaction. Please adjust your values and try again.")
-    except RESTServerError as e:
-        print(e)        
-        print("\nYou likely do not have enough funds to complete the transaction. Please adjust your values and try again.")
-    return None
-
-def send_endpoint(paramsDict, wallet):
-    try:
-        tx = wallet.transfer_multiple(destinations = paramsDict['destinations'], 
-                                            metadata = paramsDict['metadata'],
-                                            allow_withdrawal = paramsDict['allow_withdrawal'],
-                                            ttl = paramsDict['ttl'],
-                                            passphrase = paramsDict['passphrase']
-                                        )
-        return tx
-    except BadRequest as e:
-        print(e)
-        print("\nA destination address is likely malformed. Please try again.")
-    except CannotCoverFee as e:
-        print(e)
-        print("\nYou likely do not have enough funds to complete the transaction. Please adjust your values and try again.")
-    except RESTServerError as e:
-        print(e)
-        if str(e)[0:33] == "The given encryption passphrase d":
-            print("\nYour passphrase is incorrect. Please try again.")
-            passphrase = getpass.getpass("Enter your passphrase: ")
-
-            copyParamsDict = paramsDict
-            copyParamsDict['passphrase'] = passphrase
-            return send_endpoint(copyParamsDict, wallet)
-
-        else:
-            print("\nYou likely do not have enough funds to complete the transaction. Please adjust your values and try again.")
-    
-    return None
-
-
-def receive(wallet):
-    logstring = ""
-
-    try:
-        logstring += str(wallet.localFirstAddress)
-    except AttributeError:
-        wallet.localFirstAddress = wallet.addresses()[0]
-        logstring += str(wallet.localFirstAddress)
-
-    return logstring
-
-def show_ada_balance(wallet):
-    logstring = "BALANCE\n"
-
-    balance = wallet.balance()
-    totalAda = str(balance.total)
-    availAda = str(balance.available)
-    rewardAda = str(balance.reward)
-
-    logstring += "TOTAL: " + totalAda + " ADA\n"
-    logstring += "AVAIL: " + availAda + " ADA\n"
-    logstring += "RWARD: " + rewardAda+ " ADA"
-    return logstring
-
-def list_assets(wallet, assetdict = None):
-    logstring = ""
-
-    if assetdict is None:
-        assetdict = wallet.assets()
-        
-    hexAssetNames = [assetTuple[0].asset_name for assetTuple in assetdict.items()]
-
-    nameBalanceTable = [[fromHex(assetIDObj.asset_name), str(balanceObj.available)] if hexAssetNames.count(assetIDObj.asset_name) == 1 else [f"{fromHex(assetIDObj.asset_name)}:{assetIDObj.policy_id[:16]}", str(balanceObj.available)] for assetIDObj, balanceObj in assetdict.items()]
-    nameBalanceTable.insert(0,["TOKEN", "AMOUNT"])
-    col_width = max(len(word) for row in nameBalanceTable for word in row) + 10
-    nameBalanceTable.insert(1,["-"*col_width, "-"*col_width])
-    
-
-    for row in nameBalanceTable:
-        logstring += ("".join(word.ljust(col_width) for word in row)) + "\n"
-
-    return logstring[:-1]
-
-def show_menu_options(wallet):
-    menuStr = "MENU OPTIONS\n"
-
-    for selectStr, mappedFunction in functionMap.items():
-        menuStr += f"{selectStr}: {mappedFunction.__name__}\n"
-    
-    return(menuStr[:-1])
-
-
-################################################
-
-def set_function_map():
-    global functionMap
-    functionMap =  {"1":show_ada_balance,
-                    "2":list_assets,
-                    "3":receive,
-                    "4":basic_send,
-                    "5":send_all,
-                    "0":show_menu_options}
-
-################################################
-
-#returns function object - still must be called
-def get_matched_function(selectionStr):
-    return functionMap[selectionStr]
-
-def get_user_selection():
-    menuStr = "\nMenu select: "
-    return input(menuStr)
-
-#####################################################
-
-def fromHex(hexStr):
-    return bytearray.fromhex(hexStr).decode()
-
-def toHex(utfstring):
-    return utfstring.encode("utf-8").hex()
-
-#####################################################
-
-if __name__ == "__main__":
-    set_function_map()
-
-    wid = input("Enter your wid: ")
-    port = int(input("Enter your cardano-wallet port: "))
-
-    wallet = Wallet(wid, backend = WalletREST(port=port))
-
-    print("\n"+show_ada_balance(wallet))
-    print("\n"+show_menu_options(wallet))
-
-    #event loop
-    while True:
-        matchedFunct = None
-        selectionStr = get_user_selection()
         try:
-            matchedFunct = get_matched_function(selectionStr)
-        except KeyError:
-            print("Selection does not exist in the menu. Please try again.")
+            remainingtokens = self.readAssetBalance()
+            inittokens = remainingtokens
+            currpullscount = self.readPullsCount()
+            lasttime = self.readLastTime()
+            lastslot = self.readSlot()
 
-        if matchedFunct is not None:
-            logString = matchedFunct(wallet)
+        except FileNotFoundError:
+            raise FileNotFoundError("You have not generated the blockchain index files. Please call generateLog.")
 
-            print(f"\n{logString}")
+
+############################################################################################################
+
+        currenttime = datetime.utcnow()
+        print(f"TIME INT:    {str(lasttime)[:-7]} to {str(currenttime)[:-7]}")
+        newtxs = self.wallet.txsfiltered(lasttime)
+
+        incomingtxs = []
+        for tx in newtxs:
+            #local_inputs == [] means incoming transaction - these are necessarily confirmed already
+            if tx.local_inputs == []:
+                if tx.inserted_at.absolute_slot > lastslot:
+                    incomingtxs.append(tx)
+
+
+        if len(incomingtxs) > 0:
+            newlastslot = incomingtxs[-1].inserted_at.absolute_slot
+            newlasttime = self.isostringtodt(incomingtxs[-1].inserted_at.time)
+            self.writeLastTime(newlasttime)
+            self.writeSlot(newlastslot)
+
+        #format {addr: [adacost, adacost]}
+        if self.discord:
+            completedDiscordPulls = self.readCompleteDiscordLog()
+
+
+        sendlist=[]
+        numpulls = 0
+
+        assetFilteredTxs = []
+        assetFilteredTxids = []
+
+        for tx in incomingtxs:
+
+
+            txoutputs = list(tx.local_outputs)
+
+            containsAssets = False
+            for output in txoutputs:
+                if output.assets != []:
+                    containsAssets = True
+
+            ########## want to keep tx with assets or not? #####
+            if not containsAssets:
+                assetFilteredTxs.append(tx)
+                assetFilteredTxids.append(tx.txid)
+
+######## GET SENDER ADDRESSES ##########
+
+        senderaddrdict = {}
+
+        ####### try koios address ######
+        koiosrequest = self.koios_tx_utxos(assetFilteredTxids)
+
+        #dict of txid, addr
+        if koiosrequest.status_code == 200:
+            koiosReturn = koiosrequest.json()
+            
+            #elem is dict for a single transaction
+            for txdict in koiosReturn:
+                senderaddrdict[txdict['tx_hash']] = txdict['inputs'][0]['payment_addr']['bech32']
+
+
+        else:
+            print(f"Koios group request failed - reattempting individually.")
+            #try for each, then blockfrost
+            for txid in assetFilteredTxids:
+                koiosindivrequest = self.koios_tx_utxos([txid])                
+                if koiosindivrequest.status_code == 200:
+                    senderaddrdict[txid] = koiosindivrequest.json()[0]['inputs'][0]['payment_addr']['bech32']
+
+                #blockfrost
+                else:
+                    (f"Koios individually request failed - reattempting with Blockfrost.")
+                    senderaddress = None
+                    attempt = 0
+                    while senderaddress is None:
+                        try:
+                            senderaddress = self.api.transaction_utxos(hash=txid).inputs[0].address
+                        except ApiError as e:
+                            attempt += 1
+                            print(f"Blockfrost sender address fetch attempt {attempt} API Error {str(e.status_code)} - reattempting.")
+                            time.sleep(3)
+                    
+                    senderaddrdict[txid] = senderaddress
+                            
+####################### PROCESS FOR FUNDS ########################
+
+        for tx in assetFilteredTxs:
+            
+            try:            
+                senderaddr = senderaddrdict[tx.txid]
+            except KeyError:
+                (f"Koios group request failed - reattempting with Blockfrost.")
+                senderaddr = None
+                attempt = 0
+                while senderaddr is None:
+                    try:
+                        senderaddr = self.api.transaction_utxos(hash=tx.txid).inputs[0].address
+                    except ApiError as e:
+                        attempt += 1
+                        print(f"Blockfrost sender address fetch attempt {attempt} API Error {str(e.status_code)} - reattempting.")
+                        time.sleep(3)
+
+            txoutputs = list(tx.local_outputs)
+            
+            countedoutput = txoutputs[0]
+            extraoutputs = txoutputs[1:]
+
+            if countedoutput.amount >= self.pullcost:
+                validmults = int(min(multsallowed, countedoutput.amount // self.pullcost))
+                returnada = countedoutput.amount - validmults*self.pullprofit
+                    
+                randomyield = 0
+                for i in range(validmults):
+                    onetrial = self.calculateYield(self.proportionperpull, remainingtokens)
+                    remainingtokens -= onetrial
+                    randomyield += onetrial
+                    
+                sendlist.append({"senderaddr": senderaddr, "pullyield": randomyield, "returnada": returnada})
+                    
+                numpulls += validmults
+
+            #discord case
+            elif self.discord:
+                sessionsDict = requests.get("http://127.0.0.1:5001/sessions").json()
+                if str(countedoutput.address) in sessionsDict:
+                    if str(int(countedoutput.amount*1000000)) in sessionsDict[str(countedoutput.address)]:
+                        if str(int(countedoutput.amount*1000000)) not in completedDiscordPulls:
+                            onetrial = self.calculateYield(self.proportionperpull, remainingtokens)
+                            absyield = int(round(onetrial*Decimal(sessionsDict[str(countedoutput.address)][str(int(countedoutput.amount*1000000))])))
+                            remainingtokens -= absyield
+
+                            sendlist.append({"senderaddr": senderaddr, "pullyield": absyield, "returnada": countedoutput.amount})
+
+                            if str(countedoutput.address) not in completedDiscordPulls:
+                                completedDiscordPulls[str(countedoutput.address)] = [str(int(countedoutput.amount*1000000))]
+                            else:
+                                completedDiscordPulls[str(countedoutput.address)].append(str(int(countedoutput.amount*1000000)))
+
+            for output in extraoutputs:
+                sendlist.append({"senderaddr": senderaddr, "pullyield": 0, "returnada": output.amount})
+
+
+        if len(sendlist)>0:
+            self.autoSendAssets(sendlist, passphrase)
+
+            print(f"TOKENS SENT: {str(inittokens-remainingtokens)}")
+            self.writeAssetBalance(remainingtokens)
+
+            print(f"No. Pulls:   {str(numpulls)}")
+            self.writePullsCount(numpulls+currpullscount)
+
+            if self.discord:
+                self.writeCompleteDiscordLog(completedDiscordPulls)
+
+
+
+
+############################################################################
+
+    def autoSendAssets(self,pendingTxList, passphrase):
+        if self.bundlesize is None:
+            self.bundlesize = 25
+        groupsof = []
+        smallarray = []
+
+        #break into groups of bundlesize (25 by default) due to tx size constraints
+        for i in range(len(pendingTxList)):
+            if i == len(pendingTxList)-1:
+                smallarray.append(pendingTxList[i])
+                groupsof.append(smallarray)
+            else:
+                if len(smallarray)==self.bundlesize:
+                    groupsof.append(smallarray)
+                    smallarray = []
+                smallarray.append(pendingTxList[i])
+
+        for groupof in groupsof:
+            destinations = []
+            for pendingtx in groupof:
+            #{"senderaddr": senderaddr, "pullyield": randomyield, "returnada": returnada}
+                if pendingtx['pullyield']!=0:
+                    destinations.append((pendingtx['senderaddr'], pendingtx['returnada'], [(self.assetIDObj,pendingtx['pullyield'])]))
+                else:
+                    destinations.append((pendingtx['senderaddr'], pendingtx['returnada']))
+
+            attempts = 0
+            sent = False
+            while not sent:
+                #loop 10 times, 30 seconds each, to give time for any pending transactions to be broadcast and free up UTXOs to build the next transaction
+                #if it still doesn't go through after 300 seconds of pause, the wallet has probably run out of funds, or the blockchain is
+                #ridiculously congested
+                try:
+                    outboundtx = self.wallet.transfer_multiple(destinations, passphrase=passphrase)
+                    sent = True
+                except CannotCoverFee:
+                    if attempts == 11:
+                        raise CannotCoverFee("There is likely insufficient funds in your wallet to distribute the requested tokens.")
+                    attempts += 1
+                    time.sleep(30)
+                except RESTServerError:
+                    if attempts == 11:
+                        raise RESTServerError("There are likely insufficient tokens in your wallet to distribute.")
+                    attempts += 1
+                    time.sleep(30)
+
+
+    #last PROCESSED SLOT
+    #format is blockno:indexno
+    #returns tuple! make sure you match
+
+    @staticmethod
+    def koios_tx_utxos(txhashlist):
+        koiosrequest = requests.post("https://api.koios.rest/api/v0/tx_utxos", json={"_tx_hashes":txhashlist})
+        return koiosrequest
+
+
+#############################################################
+    @staticmethod
+    def dttodict(dt):
+        return {"year": dt.year, "month": dt.month, "day": dt.day,"hour": dt.hour, "minute": dt.minute, "second": dt.second,  "mus": dt.microsecond}
+
+    @staticmethod
+    def dicttodt(dtdict):
+        return datetime(dtdict['year'],dtdict['month'],dtdict['day'],dtdict['hour'],dtdict['minute'],dtdict['second'],dtdict['mus'])
+
+    @staticmethod
+    def isostringtodt(isostring):
+        return datetime(int(isostring[0:4]), int(isostring[5:7]), int(isostring[8:10]),int(isostring[11:13]),int(isostring[14:16]),int(isostring[17:19]),1)
+
+
+    def generateLog(self, initTokenbalance, totalpulls):
+        timenow = datetime.utcnow()
+        logdict = {"tokenBalance": [initTokenbalance], "txTime": [self.dttodict(timenow)], "totalPulls": [totalpulls], "slot":[1]}
+
+        with open(self.logFile, 'w') as f:
+            json.dump(logdict, f)
+
+    def readLog(self):
+        with open(self.logFile, 'r') as f:
+            return json.load(f)
+    def writeLog(self, logDict):
+        with open(self.logFile, 'w') as f:
+            json.dump(logDict, f)
+
+
+    def writeCompleteDiscordLog(self, completeDiscordLog):
+        with open(".\__log\discordlog.json", 'w') as f:
+            json.dump(completeDiscordLog, f)
+    
+    def readCompleteDiscordLog(self):
+        if ".\__log\discordlog.json" in os.listdir('.'):
+            with open(".\__log\discordlog.json", 'r') as f:
+                return json.load(f)
+        else:
+            return {}
+        
+
+
+    def rollback(self):
+        logDict = self.readLog()
+        logDict['txTime'].append(logDict['txTime'][-2])
+        logDict['slot'].append(logDict['slot'][-2])
+        self.writeLog(logDict)
+
+    def readLastTime(self):
+        logDict = self.readLog()
+        return self.dicttodt(logDict['txTime'][-1])
+
+    def writeLastTime(self, dt):
+        logDict = self.readLog()
+        logDict['txTime'].append(self.dttodict(dt))
+        self.writeLog(logDict)
+
+    def readSlot(self):
+        logDict = self.readLog()
+        return logDict['slot'][-1]
+
+    def writeSlot(self, slot):
+        logDict = self.readLog()
+        logDict['slot'].append(slot)
+        self.writeLog(logDict)
+
+
+    def readAssetBalance(self):
+        logDict = self.readLog()
+        return logDict['tokenBalance'][-1]
+
+    def writeAssetBalance(self, balance):
+        logDict = self.readLog()
+        logDict['tokenBalance'].append(balance)
+        self.writeLog(logDict)
+
+        print(f"TOKENS REM:  {str(balance)}\n")
+
+    def readPullsCount(self):
+        logDict = self.readLog()
+        return logDict['totalPulls'][-1]
+
+    def writePullsCount(self, balance):
+        logDict = self.readLog()
+        logDict['totalPulls'].append(balance)
+        self.writeLog(logDict)
+
+        print(f"Tot. Pulls:  {str(balance)}")
+
+###############################################################
+    #save processed transactions to file
+
+
+
+    @staticmethod
+    def calculateYield(proportionperpull, remainingtokens):
+        return int(round(2*random.betavariate(12, 12)*int(round(remainingtokens*proportionperpull))))
+
+    @staticmethod
+    def hexencode(utf8str):
+        return utf8str.encode("utf-8").hex()
+
+    @staticmethod
+    def hexdecode(hexstr):
+        return bytes.fromhex(hexstr).decode("utf-8")
+
+
+class Swapper:
+
+    #constructor
+    #apiKey: str - Blockfrost Api Key
+    #assetName: str - hex name of asset
+    #assetPolicyID: str - policy id of asset
+    #walletID: str - reference ID of wallet used by cardano-wallet
+    #faucetAddr: str - receiving address of faucet
+    #port: int - port that cardano-wallet is broadcasting on
+
+    def __init__(self, apiKey, receiveAssetName, receiveAssetPolicyID, sendAssetName,sendAssetPolicyID, walletID, swapperAddr,port=8090, host="localhost"):
+        self.api = BlockFrostApi(project_id=apiKey)
+        self.wallet = Wallet(walletID, backend=WalletREST(port=port, host=host))
+
+        self.receiveAssetIDObj = AssetID(receiveAssetName,receiveAssetPolicyID)
+        self.sendAssetIDObj = AssetID(sendAssetName,sendAssetPolicyID)
+
+        self.swapperAddr = swapperAddr
+        self.bundlesize = None
+
+        self.logFile = receiveAssetName+receiveAssetPolicyID+sendAssetName+sendAssetPolicyID+swapperAddr+"swap.json"
+
+
+        print("Token swap service tool created.\n")
+
+
+
+    def runloop(self, passphrase, period=300,loops = 10000,bundlesize=20):
+        self.bundlesize = bundlesize
+
+
+        for i in range(loops):
+            timenow = datetime.now()
+            print(f"SYS TIME:    {str(timenow)[:-7]}")
+
+
+            self.swaptokens(passphrase)
+            print("____________________SWAP____________________")
+            time.sleep(period)
+
+
+
+    def swaptokens(self,passphrase):
+
+        try:
+            remainingtokens = self.readAssetBalance()
+            lasttime = self.readLastTime()
+            lastslot = self.readSlot()
+
+        except FileNotFoundError:
+            raise FileNotFoundError("You have not generated the blockchain index files. Please call generateLog.")
+
+
+############################################################################################################
+
+        currenttime = datetime.utcnow()
+        print(f"TIME INT:    {str(lasttime)[:-7]} to {str(currenttime)[:-7]}")
+        newtxs = self.wallet.txsfiltered(lasttime)
+
+        incomingtxs = []
+        for tx in newtxs:
+            #local_inputs == [] means incoming transaction - these are necessarily confirmed already
+            if tx.local_inputs == []:
+                if tx.inserted_at.absolute_slot > lastslot:
+                    incomingtxs.append(tx)
+
+
+        if len(incomingtxs) > 0:
+            newlastslot = incomingtxs[-1].inserted_at.absolute_slot
+            newlasttime = self.isostringtodt(incomingtxs[-1].inserted_at.time)
+            self.writeLastTime(newlasttime)
+            self.writeSlot(newlastslot)
+
+        sendlist=[]
+        tokensswapped = 0
+
+
+        for tx in incomingtxs:
+            txoutputs = list(tx.local_outputs)
+
+            totalcorrecttokens = 0
+            totalada = Decimal(0)
+
+            containsAssets = False
+            for output in txoutputs:
+                totalada += output.amount
+                for assettuple in output.assets:
+                    if assettuple[0] == self.receiveAssetIDObj:
+                        containsAssets = True
+                        totalcorrecttokens += assettuple[1]
+
+
+            if containsAssets:
+                senderaddr = None
+                attempt = 0
+                while senderaddr is None:
+                    try:
+                        senderaddr = self.api.transaction_utxos(hash=tx.txid).inputs[0].address
+                    except ApiError as e:
+                        attempt += 1
+                        print(f"Sender address fetch attempt {attempt} API Error {str(e.status_code)} - reattempting.")
+                        time.sleep(3)
+
+                    sendlist.append({"senderaddr": senderaddr, "tokenpayload": totalcorrecttokens, "returnada": totalada})
+
+                    tokensswapped += totalcorrecttokens
+
+
+
+        if len(sendlist)>0:
+            self.autoSendAssets(sendlist, passphrase)
+            print(f"TKN SWAPPED: {str(tokensswapped)}")
+            self.writeAssetBalance(remainingtokens-tokensswapped)
+
+
+############################################################################
+
+    def autoSendAssets(self,pendingTxList, passphrase):
+        if self.bundlesize is None:
+            self.bundlesize = 25
+        groupsof = []
+        smallarray = []
+
+        #break into groups of bundlesize (25 by default) due to tx size constraints
+        for i in range(len(pendingTxList)):
+            if i == len(pendingTxList)-1:
+                smallarray.append(pendingTxList[i])
+                groupsof.append(smallarray)
+            else:
+                if len(smallarray)==self.bundlesize:
+                    groupsof.append(smallarray)
+                    smallarray = []
+                smallarray.append(pendingTxList[i])
+
+        for groupof in groupsof:
+            destinations = []
+            for pendingtx in groupof:
+            #{"senderaddr": senderaddr, "tokenpayload": randomyield, "returnada": returnada}
+                if pendingtx['tokenpayload']!=0:
+                    destinations.append((pendingtx['senderaddr'], pendingtx['returnada'], [(self.sendAssetIDObj,pendingtx['tokenpayload'])]))
+                else:
+                    destinations.append((pendingtx['senderaddr'], pendingtx['returnada']))
+
+            attempts = 0
+            sent = False
+            while not sent:
+                #loop 10 times, 30 seconds each, to give time for any pending transactions to be broadcast and free up UTXOs to build the next transaction
+                #if it still doesn't go through after 300 seconds of pause, the wallet has probably run out of funds, or the blockchain is
+                #ridiculously congested
+                try:
+                    self.wallet.transfer_multiple(destinations, passphrase=passphrase)
+                    sent = True
+                except CannotCoverFee:
+                    if attempts == 11:
+                        raise CannotCoverFee("There is likely insufficient funds in your wallet to distribute the requested tokens.")
+                    attempts += 1
+                    time.sleep(30)
+                except RESTServerError:
+                    if attempts == 11:
+                        raise RESTServerError("There are likely insufficient tokens in your wallet to distribute.")
+                    attempts += 1
+                    time.sleep(30)
+
+
+    #last PROCESSED SLOT
+    #format is blockno:indexno
+    #returns tuple! make sure you match
+
+#############################################################
+    @staticmethod
+    def dttodict(dt):
+        return {"year": dt.year, "month": dt.month, "day": dt.day,"hour": dt.hour, "minute": dt.minute, "second": dt.second,  "mus": dt.microsecond}
+
+    @staticmethod
+    def dicttodt(dtdict):
+        return datetime(dtdict['year'],dtdict['month'],dtdict['day'],dtdict['hour'],dtdict['minute'],dtdict['second'],dtdict['mus'])
+
+    @staticmethod
+    def isostringtodt(isostring):
+        return datetime(int(isostring[0:4]), int(isostring[5:7]), int(isostring[8:10]),int(isostring[11:13]),int(isostring[14:16]),int(isostring[17:19]),1)
+
+
+    def generateLog(self, initTokenbalance):
+        timenow = datetime.utcnow()
+        logdict = {"tokenBalance": [initTokenbalance], "txTime": [self.dttodict(timenow)], "slot":[1]}
+
+        with open(self.logFile, 'w') as f:
+            json.dump(logdict, f)
+
+    def readLog(self):
+        with open(self.logFile, 'r') as f:
+            return json.load(f)
+    def writeLog(self, logDict):
+        with open(self.logFile, 'w') as f:
+            json.dump(logDict, f)
+
+    def rollback(self):
+        logDict = self.readLog()
+        logDict['txTime'].append(logDict['txTime'][-2])
+        logDict['slot'].append(logDict['slot'][-2])
+        self.writeLog(logDict)
+
+    def readLastTime(self):
+        logDict = self.readLog()
+        return self.dicttodt(logDict['txTime'][-1])
+
+    def writeLastTime(self, dt):
+        logDict = self.readLog()
+        logDict['txTime'].append(self.dttodict(dt))
+        self.writeLog(logDict)
+
+    def readSlot(self):
+        logDict = self.readLog()
+        return logDict['slot'][-1]
+
+    def writeSlot(self, slot):
+        logDict = self.readLog()
+        logDict['slot'].append(slot)
+        self.writeLog(logDict)
+
+
+    def readAssetBalance(self):
+        logDict = self.readLog()
+        return logDict['tokenBalance'][-1]
+
+    def writeAssetBalance(self, balance):
+        logDict = self.readLog()
+        logDict['tokenBalance'].append(balance)
+        self.writeLog(logDict)
+
+        print(f"TOKENS REM:  {str(balance)}\n")
+
+
+###############################################################
+    #save processed transactions to file
+
+
+
+    @staticmethod
+    def hexencode(utf8str):
+        return utf8str.encode("utf-8").hex()
+
+    @staticmethod
+    def hexdecode(hexstr):
+        return bytes.fromhex(hexstr).decode("utf-8")
