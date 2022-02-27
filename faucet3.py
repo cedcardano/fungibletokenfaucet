@@ -20,6 +20,20 @@ import requests
 #make runloop able to access all the variables - maybe as in instance variable only used for logging
 #so reliability isn't strict
 
+#the faucet requires at least the very least 3*bundlesize ADA to function (more if your tokens are bundled with more than ~1.5ADA for each output),
+#but throughput is greatly increased when there is more spare ADA in the wallet
+#due to increased fragmentation and therefore there are lots of UTXOs to select from.
+#throughput may be slow at first if your ADA is in a big chunk,
+#but should increase as UTXOs are increasingly fragmented and the risk of contention is reduced.
+#you can fragment the ADA yourself by breaking it into smaller UTXO chunks, but every distribution of 25 token UTXOs
+#comes with 25 change UTXOs, so fragmentation should happen by itself fairly quickly.
+#you can reduce bundlesize to reduce the minimum amount of ADA needed to operate, but this increases the number of transactions needed
+# and thus fees. Do NOT increase bundlesize past 25 - higher amounts risk transactions failing due to exceeding size limitations.
+
+#for maximum throughput I would recommend having at least 500ADA in the wallet, or even 2000+ if you want to
+#loop 5 times a minute and approach Blockfrost's bottleneck of 500 tx per minute
+
+
 
 class Faucet:
 
@@ -48,215 +62,56 @@ class Faucet:
 
         #serve on port localhost port 5001
         self.discord = discord
+        self.logging = True
 
-        print("Faucet Created.\n")
-
-
-
-    #the faucet requires at least the very least 3*bundlesize ADA to function (more if your tokens are bundled with more than ~1.5ADA for each output),
-    #but throughput is greatly increased when there is more spare ADA in the wallet
-    #due to increased fragmentation and therefore there are lots of UTXOs to select from.
-    #throughput may be slow at first if your ADA is in a big chunk,
-    #but should increase as UTXOs are increasingly fragmented and the risk of contention is reduced.
-    #you can fragment the ADA yourself by breaking it into smaller UTXO chunks, but every distribution of 25 token UTXOs
-    #comes with 25 change UTXOs, so fragmentation should happen by itself fairly quickly.
-    #you can reduce bundlesize to reduce the minimum amount of ADA needed to operate, but this increases the number of transactions needed
-    # and thus fees. Do NOT increase bundlesize past 25 - higher amounts risk transactions failing due to exceeding size limitations.
-
-    #for maximum throughput I would recommend having at least 500ADA in the wallet, or even 2000+ if you want to
-    #loop 5 times a minute and approach Blockfrost's bottleneck of 500 tx per minute
+        self.printiflog("Faucet Created.\n")
 
     def runloop(self, passphrase, period=300,loops = 10000,bundlesize=20, multsallowed = 1):
         self.bundlesize = bundlesize
 
-
         for i in range(loops):
             timenow = datetime.now()
-            print(f"SYS TIME:    {str(timenow)[:-7]}")
+            self.printiflog(f"SYS TIME:    {str(timenow)[:-7]}")
 
 
             self.sendtokens(passphrase, multsallowed=multsallowed)
-            print("___________________FAUCET___________________")
+            self.printiflog("___________________FAUCET___________________")
             time.sleep(period)
-
-
 
     def sendtokens(self,passphrase, multsallowed: int = 1):
         if multsallowed < 1 or (not isinstance(multsallowed, int)):
             raise Exception("Illegal multsallowed parameter.")
-
         try:
             remainingtokens = self.readAssetBalance()
-            inittokens = remainingtokens
             currpullscount = self.readPullsCount()
-            lasttime = self.readLastTime()
-            lastslot = self.readSlot()
-
         except FileNotFoundError:
             raise FileNotFoundError("You have not generated the blockchain index files. Please call generateLog.")
 
-
-############################################################################################################
-
-        currenttime = datetime.utcnow()
-        print(f"TIME INT:    {str(lasttime)[:-7]} to {str(currenttime)[:-7]}")
-        newtxs = self.wallet.txsfiltered(lasttime)
-
-        incomingtxs = []
-        for tx in newtxs:
-            #local_inputs == [] means incoming transaction - these are necessarily confirmed already
-            if tx.local_inputs == []:
-                if tx.inserted_at.absolute_slot > lastslot:
-                    incomingtxs.append(tx)
-
-
-        if len(incomingtxs) > 0:
-            newlastslot = incomingtxs[-1].inserted_at.absolute_slot
-            newlasttime = self.isostringtodt(incomingtxs[-1].inserted_at.time)
-            self.writeLastTime(newlasttime)
-            self.writeSlot(newlastslot)
-
+        incomingtxs = self.get_new_incoming_txs()
         #format {addr: [adacost, adacost]}
+        completedDiscordPulls = None
         if self.discord:
             completedDiscordPulls = self.readCompleteDiscordLog()
 
-
-        sendlist=[]
-        numpulls = 0
-
-        assetFilteredTxs = []
-        assetFilteredTxids = []
-
-        for tx in incomingtxs:
-
-
-            txoutputs = list(tx.local_outputs)
-
-            containsAssets = False
-            for output in txoutputs:
-                if output.assets != []:
-                    containsAssets = True
-
-            ########## want to keep tx with assets or not? #####
-            if not containsAssets:
-                assetFilteredTxs.append(tx)
-                assetFilteredTxids.append(tx.txid)
-
-######## GET SENDER ADDRESSES ##########
-
-        senderaddrdict = {}
-
-        ####### try koios address ######
-        koiosrequest = self.koios_tx_utxos(assetFilteredTxids)
-
-        #dict of txid, addr
-        if koiosrequest.status_code == 200:
-            koiosReturn = koiosrequest.json()
-            
-            #elem is dict for a single transaction
-            for txdict in koiosReturn:
-                senderaddrdict[txdict['tx_hash']] = txdict['inputs'][0]['payment_addr']['bech32']
-
-
-        else:
-            print(f"Koios group request failed - reattempting individually.")
-            #try for each, then blockfrost
-            for txid in assetFilteredTxids:
-                koiosindivrequest = self.koios_tx_utxos([txid])                
-                if koiosindivrequest.status_code == 200:
-                    senderaddrdict[txid] = koiosindivrequest.json()[0]['inputs'][0]['payment_addr']['bech32']
-
-                #blockfrost
-                else:
-                    (f"Koios individually request failed - reattempting with Blockfrost.")
-                    senderaddress = None
-                    attempt = 0
-                    while senderaddress is None:
-                        try:
-                            senderaddress = self.api.transaction_utxos(hash=txid).inputs[0].address
-                        except ApiError as e:
-                            attempt += 1
-                            print(f"Blockfrost sender address fetch attempt {attempt} API Error {str(e.status_code)} - reattempting.")
-                            time.sleep(3)
-                    
-                    senderaddrdict[txid] = senderaddress
-                            
-####################### PROCESS FOR FUNDS ########################
-
-        for tx in assetFilteredTxs:
-            
-            try:            
-                senderaddr = senderaddrdict[tx.txid]
-            except KeyError:
-                (f"Koios group request failed - reattempting with Blockfrost.")
-                senderaddr = None
-                attempt = 0
-                while senderaddr is None:
-                    try:
-                        senderaddr = self.api.transaction_utxos(hash=tx.txid).inputs[0].address
-                    except ApiError as e:
-                        attempt += 1
-                        print(f"Blockfrost sender address fetch attempt {attempt} API Error {str(e.status_code)} - reattempting.")
-                        time.sleep(3)
-
-            txoutputs = list(tx.local_outputs)
-            
-            countedoutput = txoutputs[0]
-            extraoutputs = txoutputs[1:]
-
-            if countedoutput.amount >= self.pullcost:
-                validmults = int(min(multsallowed, countedoutput.amount // self.pullcost))
-                returnada = countedoutput.amount - validmults*self.pullprofit
-                    
-                randomyield = 0
-                for i in range(validmults):
-                    onetrial = self.calculateYield(self.proportionperpull, remainingtokens)
-                    remainingtokens -= onetrial
-                    randomyield += onetrial
-                    
-                sendlist.append({"senderaddr": senderaddr, "pullyield": randomyield, "returnada": returnada})
-                    
-                numpulls += validmults
-
-            #discord case
-            elif self.discord:
-                sessionsDict = requests.get("http://127.0.0.1:5001/sessions").json()
-                if str(countedoutput.address) in sessionsDict:
-                    if str(int(countedoutput.amount*1000000)) in sessionsDict[str(countedoutput.address)]:
-                        if str(int(countedoutput.amount*1000000)) not in completedDiscordPulls:
-                            onetrial = self.calculateYield(self.proportionperpull, remainingtokens)
-                            absyield = int(round(onetrial*Decimal(sessionsDict[str(countedoutput.address)][str(int(countedoutput.amount*1000000))])))
-                            remainingtokens -= absyield
-
-                            sendlist.append({"senderaddr": senderaddr, "pullyield": absyield, "returnada": countedoutput.amount})
-
-                            if str(countedoutput.address) not in completedDiscordPulls:
-                                completedDiscordPulls[str(countedoutput.address)] = [str(int(countedoutput.amount*1000000))]
-                            else:
-                                completedDiscordPulls[str(countedoutput.address)].append(str(int(countedoutput.amount*1000000)))
-
-            for output in extraoutputs:
-                sendlist.append({"senderaddr": senderaddr, "pullyield": 0, "returnada": output.amount})
-
-
+        assetFilteredTxs = self.filtered_incomings_discard_assets(incomingtxs)
+        senderaddrdict = self.get_sender_addr_dict([tx.txid for tx in assetFilteredTxs])
+    
+        sendlist, numpulls = self.prepare_sendlist(self, assetFilteredTxs, senderaddrdict, multsallowed, remainingtokens, completedDiscordPulls)
+        
         if len(sendlist)>0:
-            self.autoSendAssets(sendlist, passphrase)
+            total_send = self.autoSendAssets(sendlist, passphrase)
+            self.printiflog(f"TOKENS SENT: {str(total_send)}")
 
-            print(f"TOKENS SENT: {str(inittokens-remainingtokens)}")
-            self.writeAssetBalance(remainingtokens)
-
-            print(f"No. Pulls:   {str(numpulls)}")
+            self.printiflog(f"No. Pulls:   {str(numpulls)}")
             self.writePullsCount(numpulls+currpullscount)
 
             if self.discord:
                 self.writeCompleteDiscordLog(completedDiscordPulls)
 
-
-
-
-############################################################################
-
     def autoSendAssets(self,pendingTxList, passphrase):
+        remainingtokens = self.readAssetBalance()
+        total_send = sum(pendingtx['pullyield'] for pendingtx in pendingTxList)
+
         if self.bundlesize is None:
             self.bundlesize = 25
         groupsof = []
@@ -302,16 +157,148 @@ class Faucet:
                     attempts += 1
                     time.sleep(30)
 
+        self.writeAssetBalance(remainingtokens - total_send)
+        return total_send
+
+    def prepare_sendlist(self, filtered_txs, sender_addr_dict, multsallowed, remainingtokens, completed_discord_pulls = None):
+        sendlist = []
+        numpulls = 0
+
+        for tx in filtered_txs:
+            try:            
+                senderaddr = sender_addr_dict[tx.txid]
+            except KeyError:
+                senderaddr = self.get_sender_addr_dict([tx.txid])[tx.txid]
+
+            txoutputs = list(tx.local_outputs)
+            
+            countedoutput = txoutputs[0]
+            extraoutputs = txoutputs[1:]
+
+            if countedoutput.amount >= self.pullcost:
+                validmults = int(min(multsallowed, countedoutput.amount // self.pullcost))
+                returnada = countedoutput.amount - validmults*self.pullprofit
+                    
+                randomyield = 0
+                for i in range(validmults):
+                    onetrial = self.calculateYield(self.proportionperpull, remainingtokens)
+                    remainingtokens -= onetrial
+                    randomyield += onetrial
+                    
+                sendlist.append({"senderaddr": senderaddr, "pullyield": randomyield, "returnada": returnada})
+                    
+                numpulls += validmults
+
+            elif completed_discord_pulls:
+                sessionsDict = requests.get("http://127.0.0.1:5001/sessions").json()
+                if str(countedoutput.address) in sessionsDict:
+                    if str(int(countedoutput.amount*1000000)) in sessionsDict[str(countedoutput.address)]:
+                        if str(int(countedoutput.amount*1000000)) not in completed_discord_pulls:
+                            onetrial = self.calculateYield(self.proportionperpull, remainingtokens)
+                            absyield = int(round(onetrial*Decimal(sessionsDict[str(countedoutput.address)][str(int(countedoutput.amount*1000000))])))
+                            remainingtokens -= absyield
+                            
+                            sendlist.append({"senderaddr": senderaddr, "pullyield": absyield, "returnada": countedoutput.amount})
+
+                            if str(countedoutput.address) not in completed_discord_pulls:
+                                completed_discord_pulls[str(countedoutput.address)] = [str(int(countedoutput.amount*1000000))]
+                            else:
+                                completed_discord_pulls[str(countedoutput.address)].append(str(int(countedoutput.amount*1000000)))
+
+            for output in extraoutputs:
+                sendlist.append({"senderaddr": senderaddr, "pullyield": 0, "returnada": output.amount})
+
+        return sendlist, numpulls
+
+    def get_new_txs(self):
+        try:
+            lasttime = self.readLastTime()
+            lastslot = self.readSlot()
+        except FileNotFoundError:
+            lastslot = 1
+            lasttime = datetime.utcnow()
+
+        currenttime = datetime.utcnow()
+        self.printiflog(f"TIME INT:    {str(lasttime)[:-7]} to {str(currenttime)[:-7]}")
+        newtxs = self.wallet.txsfiltered(lasttime)
+
+        return newtxs, lastslot
+
+    def get_new_incoming_txs(self):
+        newtxs, lastslot = self.get_new_txs()
+
+        if len(newtxs) == 0:
+            return []
+
+        incomingtxs = []
+        for tx in newtxs:
+            #local_inputs == [] means incoming transaction - these are necessarily confirmed already
+            if tx.local_inputs == []:
+                if tx.inserted_at.absolute_slot > lastslot:
+                    incomingtxs.append(tx)
+        
+        if incomingtxs:
+            newlastslot = newtxs[-1].inserted_at.absolute_slot
+            newlasttime = self.isostringtodt(newtxs[-1].inserted_at.time)
+            self.writeLastTime(newlasttime)
+            self.writeSlot(newlastslot)
+
+        return incomingtxs
+
+    def filtered_incomings_discard_assets(self, incomingtxs):
+        assetFilteredTxs = []
+        for tx in incomingtxs:
+            if not bool(sum(1 for output in list(tx.local_outputs) if output.assets != [])):
+                assetFilteredTxs.append(tx)
+        
+        return assetFilteredTxs
+
+    def get_sender_addr_dict(self, txid_list: list[str]) -> dict[str, str]:
+        koiosrequest = self.koios_tx_utxos(txid_list)
+
+        #dict of txid, addr
+        if koiosrequest.status_code == 200:
+            return {txdict['tx_hash']:txdict['inputs'][0]['payment_addr']['bech32'] for txdict in koiosrequest.json()}
+
+        else:
+            senderaddrdict = {}
+            self.printiflog(f"Koios group request failed - reattempting individually.")
+            #try for each, then blockfrost
+            for txid in txid_list:
+                koiosindivrequest = self.koios_tx_utxos([txid])                
+                if koiosindivrequest.status_code == 200:
+                    senderaddrdict[txid] = koiosindivrequest.json()[0]['inputs'][0]['payment_addr']['bech32']
+
+                #blockfrost
+                else:
+                    self.printiflog(f"Koios individually request failed - reattempting with Blockfrost.")
+                    senderaddress = None
+                    attempt = 0
+                    while senderaddress is None:
+                        try:
+                            senderaddress = self.api.transaction_utxos(hash=txid).inputs[0].address
+                        except ApiError as e:
+                            attempt += 1
+                            self.printiflogprint(f"Blockfrost sender address fetch attempt {attempt} API Error {str(e.status_code)} - reattempting.")
+                            time.sleep(3)
+                    
+                    senderaddrdict[txid] = senderaddress
+            return senderaddrdict
+
 
     #last PROCESSED SLOT
     #format is blockno:indexno
     #returns tuple! make sure you match
+
 
     @staticmethod
     def koios_tx_utxos(txhashlist):
         koiosrequest = requests.post("https://api.koios.rest/api/v0/tx_utxos", json={"_tx_hashes":txhashlist})
         return koiosrequest
 
+    def printiflog(self, printstring):
+        if self.logging:
+            print(printstring)
 
 #############################################################
     @staticmethod
@@ -418,6 +405,19 @@ class Faucet:
     @staticmethod
     def hexdecode(hexstr):
         return bytes.fromhex(hexstr).decode("utf-8")
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 class Swapper:
