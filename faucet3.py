@@ -1,4 +1,3 @@
-from multiprocessing.spawn import prepare
 from cardano.wallet import Wallet
 from cardano.wallet import WalletService
 from cardano.backends.walletrest import WalletREST
@@ -99,7 +98,7 @@ class Faucet:
         if self.discord:
             prepare_topups = self.prepare_discord_topups()
             if prepare_topups:
-                sendlist += self.prepare_discord_topups()
+                sendlist += prepare_topups
                 discord_topup = True
             else:
                 discord_topup = False
