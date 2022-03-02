@@ -88,25 +88,20 @@ class Faucet:
             raise FileNotFoundError("You have not generated the blockchain index files. Please call generateLog.")
 
         incomingtxs = self.get_new_incoming_txs()
-        #format {addr: [adacost, adacost]}
-        completedDiscordPulls = None
-        if self.discord:
-            completedDiscordPulls = self.readCompleteDiscordLog()
 
         assetFilteredTxs = self.filtered_incomings_discard_assets(incomingtxs)
         senderaddrdict = self.get_sender_addr_dict([tx.txid for tx in assetFilteredTxs])
     
-        sendlist, numpulls = self.prepare_sendlist(assetFilteredTxs, senderaddrdict, multsallowed, remainingtokens, completedDiscordPulls)
-        
+        sendlist, numpulls = self.prepare_sendlist(assetFilteredTxs, senderaddrdict, multsallowed, remainingtokens)
+        if self.discord:
+            sendlist += self.prepare_discord_topups()
+
         if len(sendlist)>0:
             total_send = self.autoSendAssets(sendlist, passphrase)
             self.printiflog(f"TOKENS SENT: {str(total_send)}")
 
             self.printiflog(f"No. Pulls:   {str(numpulls)}")
             self.writePullsCount(numpulls+currpullscount)
-
-            if self.discord:
-                self.writeCompleteDiscordLog(completedDiscordPulls)
 
     def autoSendAssets(self,pendingTxList, passphrase):
         remainingtokens = self.readAssetBalance()
@@ -160,7 +155,15 @@ class Faucet:
         self.writeAssetBalance(remainingtokens - total_send)
         return total_send
 
-    def prepare_sendlist(self, filtered_txs, sender_addr_dict, multsallowed, remainingtokens, completed_discord_pulls = None):
+    def prepare_discord_topups(self) -> list[dict[str, str | int | Decimal]]:
+        sessionsDict = requests.get("http://127.0.0.1:5001/sessions").json()
+        appendPendingTxList = []
+        for addr, topupAmount in sessionsDict:
+            elemDict = {'senderaddr':addr, 'returnada': Decimal("1.5"),'pullyield':topupAmount }
+            appendPendingTxList.append(elemDict)
+        return appendPendingTxList
+
+    def prepare_sendlist(self, filtered_txs, sender_addr_dict, multsallowed, remainingtokens):
         sendlist = []
         numpulls = 0
 
@@ -188,26 +191,6 @@ class Faucet:
                 sendlist.append({"senderaddr": senderaddr, "pullyield": randomyield, "returnada": returnada})
                     
                 numpulls += validmults
-
-
-            #right now, iterating per incoming tx, checking if they match an active session.
-            #change this to run once for all existing sessions, without checking for a match
-
-            elif completed_discord_pulls is not None:
-                sessionsDict = requests.get("http://127.0.0.1:5001/sessions").json()
-                if str(countedoutput.address) in sessionsDict:
-                    if str(int(countedoutput.amount*1000000)) in sessionsDict[str(countedoutput.address)]:
-                        if str(int(countedoutput.amount*1000000)) not in completed_discord_pulls:
-                            onetrial = self.calculateYield(self.proportionperpull, remainingtokens)
-                            absyield = int(round(onetrial*Decimal(sessionsDict[str(countedoutput.address)][str(int(countedoutput.amount*1000000))])))
-                            remainingtokens -= absyield
-                            
-                            sendlist.append({"senderaddr": senderaddr, "pullyield": absyield, "returnada": countedoutput.amount})
-
-                            if str(countedoutput.address) not in completed_discord_pulls:
-                                completed_discord_pulls[str(countedoutput.address)] = [str(int(countedoutput.amount*1000000))]
-                            else:
-                                completed_discord_pulls[str(countedoutput.address)].append(str(int(countedoutput.amount*1000000)))
 
             for output in extraoutputs:
                 sendlist.append({"senderaddr": senderaddr, "pullyield": 0, "returnada": output.amount})
@@ -331,19 +314,6 @@ class Faucet:
     def writeLog(self, logDict):
         with open(self.logFile, 'w') as f:
             json.dump(logDict, f)
-
-
-    def writeCompleteDiscordLog(self, completeDiscordLog):
-        with open(".\__log\discordlog.json", 'w') as f:
-            json.dump(completeDiscordLog, f)
-    
-    def readCompleteDiscordLog(self):
-        if ".\__log\discordlog.json" in os.listdir('.'):
-            with open(".\__log\discordlog.json", 'r') as f:
-                return json.load(f)
-        else:
-            return {}
-        
 
 
     def rollback(self):
