@@ -189,7 +189,11 @@ class Faucet:
                     
                 numpulls += validmults
 
-            elif completed_discord_pulls:
+
+            #right now, iterating per incoming tx, checking if they match an active session.
+            #change this to run once for all existing sessions, without checking for a match
+
+            elif completed_discord_pulls is not None:
                 sessionsDict = requests.get("http://127.0.0.1:5001/sessions").json()
                 if str(countedoutput.address) in sessionsDict:
                     if str(int(countedoutput.amount*1000000)) in sessionsDict[str(countedoutput.address)]:
