@@ -1,3 +1,4 @@
+from multiprocessing.spawn import prepare
 from cardano.wallet import Wallet
 from cardano.wallet import WalletService
 from cardano.backends.walletrest import WalletREST
@@ -66,6 +67,8 @@ class Faucet:
 
         self.printiflog("Faucet Created.\n")
 
+        self.pending_discord_topup = []
+
     def runloop(self, passphrase, period=300,loops = 10000,bundlesize=20, multsallowed = 1):
         self.bundlesize = bundlesize
 
@@ -94,10 +97,17 @@ class Faucet:
     
         sendlist, numpulls = self.prepare_sendlist(assetFilteredTxs, senderaddrdict, multsallowed, remainingtokens)
         if self.discord:
-            sendlist += self.prepare_discord_topups()
+            prepare_topups = self.prepare_discord_topups()
+            if prepare_topups:
+                sendlist += self.prepare_discord_topups()
+                discord_topup = True
+            else:
+                discord_topup = False
 
         if len(sendlist)>0:
-            total_send = self.autoSendAssets(sendlist, passphrase)
+            total_send, outbound_txs = self.autoSendAssets(sendlist, passphrase)
+            if discord_topup:
+                self.pending_discord_topup = [tx.txid for tx in outbound_txs]
             self.printiflog(f"TOKENS SENT: {str(total_send)}")
 
             self.printiflog(f"No. Pulls:   {str(numpulls)}")
@@ -134,12 +144,14 @@ class Faucet:
 
             attempts = 0
             sent = False
+            outbound_txs = []
             while not sent:
                 #loop 10 times, 30 seconds each, to give time for any pending transactions to be broadcast and free up UTXOs to build the next transaction
                 #if it still doesn't go through after 300 seconds of pause, the wallet has probably run out of funds, or the blockchain is
                 #ridiculously congested
                 try:
                     outboundtx = self.wallet.transfer_multiple(destinations, passphrase=passphrase)
+                    outbound_txs.append(outboundtx)
                     sent = True
                 except CannotCoverFee:
                     if attempts == 11:
@@ -153,14 +165,15 @@ class Faucet:
                     time.sleep(30)
 
         self.writeAssetBalance(remainingtokens - total_send)
-        return total_send
+        return total_send, outbound_txs
 
     def prepare_discord_topups(self) -> list[dict[str, str | int | Decimal]]:
-        sessionsDict = requests.get("http://127.0.0.1:5001/sessions").json()
         appendPendingTxList = []
-        for addr, topupAmount in sessionsDict.items():
-            elemDict = {'senderaddr':addr, 'returnada': Decimal("1.5"),'pullyield':topupAmount }
-            appendPendingTxList.append(elemDict)
+        if not self.pending_discord_topup:
+            sessionsDict = requests.get("http://127.0.0.1:5001/sessions").json()
+            for addr, topupAmount in sessionsDict.items():
+                elemDict = {'senderaddr':addr, 'returnada': Decimal("1.5"),'pullyield':topupAmount }
+                appendPendingTxList.append(elemDict)
         return appendPendingTxList
 
     def prepare_sendlist(self, filtered_txs, sender_addr_dict, multsallowed, remainingtokens):
@@ -208,8 +221,8 @@ class Faucet:
         currenttime = datetime.utcnow()
         self.printiflog(f"TIME INT:    {str(lasttime)[:-7]} to {str(currenttime)[:-7]}")
         newtxs = self.wallet.txsfiltered(lasttime)
-
-        return newtxs, lastslot
+        in_ledger_txs = [tx for tx in newtxs if tx.status == "in_ledger"]
+        return in_ledger_txs, lastslot
 
     def get_new_incoming_txs(self):
         newtxs, lastslot = self.get_new_txs()
@@ -223,7 +236,9 @@ class Faucet:
             if tx.local_inputs == []:
                 if tx.inserted_at.absolute_slot > lastslot:
                     incomingtxs.append(tx)
-        
+            else:
+                if tx.txid in self.pending_discord_topup:
+                    self.pending_discord_topup.remove(tx.txid)
         if incomingtxs:
             newlastslot = newtxs[-1].inserted_at.absolute_slot
             newlasttime = self.isostringtodt(newtxs[-1].inserted_at.time)
