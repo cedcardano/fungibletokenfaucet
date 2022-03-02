@@ -96,7 +96,7 @@ class Faucet:
         assetFilteredTxs = self.filtered_incomings_discard_assets(incomingtxs)
         senderaddrdict = self.get_sender_addr_dict([tx.txid for tx in assetFilteredTxs])
     
-        sendlist, numpulls = self.prepare_sendlist(self, assetFilteredTxs, senderaddrdict, multsallowed, remainingtokens, completedDiscordPulls)
+        sendlist, numpulls = self.prepare_sendlist(assetFilteredTxs, senderaddrdict, multsallowed, remainingtokens, completedDiscordPulls)
         
         if len(sendlist)>0:
             total_send = self.autoSendAssets(sendlist, passphrase)
