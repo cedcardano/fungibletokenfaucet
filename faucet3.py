@@ -158,7 +158,7 @@ class Faucet:
     def prepare_discord_topups(self) -> list[dict[str, str | int | Decimal]]:
         sessionsDict = requests.get("http://127.0.0.1:5001/sessions").json()
         appendPendingTxList = []
-        for addr, topupAmount in sessionsDict:
+        for addr, topupAmount in sessionsDict.items():
             elemDict = {'senderaddr':addr, 'returnada': Decimal("1.5"),'pullyield':topupAmount }
             appendPendingTxList.append(elemDict)
         return appendPendingTxList
