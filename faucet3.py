@@ -71,7 +71,7 @@ class Faucet:
     def runloop(self, passphrase, period=300,loops = 10000,bundlesize=20, multsallowed = 1):
         self.bundlesize = bundlesize
 
-        for i in range(loops):
+        for _ in range(loops):
             timenow = datetime.now()
             self.printiflog(f"SYS TIME:    {str(timenow)[:-7]}")
 
@@ -93,11 +93,10 @@ class Faucet:
 
         assetFilteredTxs = self.filtered_incomings_discard_assets(incomingtxs)
         senderaddrdict = self.get_sender_addr_dict([tx.txid for tx in assetFilteredTxs])
-    
+
         sendlist, numpulls = self.prepare_sendlist(assetFilteredTxs, senderaddrdict, multsallowed, remainingtokens)
         if self.discord:
-            prepare_topups = self.prepare_discord_topups()
-            if prepare_topups:
+            if prepare_topups := self.prepare_discord_topups():
                 sendlist += prepare_topups
                 discord_topup = True
             else:
@@ -186,26 +185,32 @@ class Faucet:
                 senderaddr = self.get_sender_addr_dict([tx.txid])[tx.txid]
 
             txoutputs = list(tx.local_outputs)
-            
+
             countedoutput = txoutputs[0]
             extraoutputs = txoutputs[1:]
 
             if countedoutput.amount >= self.pullcost:
                 validmults = int(min(multsallowed, countedoutput.amount // self.pullcost))
                 returnada = countedoutput.amount - validmults*self.pullprofit
-                    
+
                 randomyield = 0
-                for i in range(validmults):
+                for _ in range(validmults):
                     onetrial = self.calculateYield(self.proportionperpull, remainingtokens)
                     remainingtokens -= onetrial
                     randomyield += onetrial
-                    
+
                 sendlist.append({"senderaddr": senderaddr, "pullyield": randomyield, "returnada": returnada})
-                    
+
                 numpulls += validmults
 
-            for output in extraoutputs:
-                sendlist.append({"senderaddr": senderaddr, "pullyield": 0, "returnada": output.amount})
+            sendlist.extend(
+                {
+                    "senderaddr": senderaddr,
+                    "pullyield": 0,
+                    "returnada": output.amount,
+                }
+                for output in extraoutputs
+            )
 
         return sendlist, numpulls
 
@@ -235,9 +240,8 @@ class Faucet:
             if tx.local_inputs == []:
                 if tx.inserted_at.absolute_slot > lastslot:
                     incomingtxs.append(tx)
-            else:
-                if tx.txid in self.pending_discord_topup:
-                    self.pending_discord_topup.remove(tx.txid)
+            elif tx.txid in self.pending_discord_topup:
+                self.pending_discord_topup.remove(tx.txid)
         if incomingtxs:
             newlastslot = newtxs[-1].inserted_at.absolute_slot
             newlasttime = self.isostringtodt(newtxs[-1].inserted_at.time)
@@ -247,44 +251,45 @@ class Faucet:
         return incomingtxs
 
     def filtered_incomings_discard_assets(self, incomingtxs):
-        assetFilteredTxs = []
-        for tx in incomingtxs:
-            if not bool(sum(1 for output in list(tx.local_outputs) if output.assets != [])):
-                assetFilteredTxs.append(tx)
-        
-        return assetFilteredTxs
+        return [
+            tx
+            for tx in incomingtxs
+            if not bool(
+                sum(output.assets != [] for output in list(tx.local_outputs))
+            )
+        ]
 
     def get_sender_addr_dict(self, txid_list: list[str]) -> dict[str, str]:
         koiosrequest = self.koios_tx_utxos(txid_list)
 
-        #dict of txid, addr
         if koiosrequest.status_code == 200:
             return {txdict['tx_hash']:txdict['inputs'][0]['payment_addr']['bech32'] for txdict in koiosrequest.json()}
 
-        else:
-            senderaddrdict = {}
-            self.printiflog(f"Koios group request failed - reattempting individually.")
+        senderaddrdict = {}
+        self.printiflog("Koios group request failed - reattempting individually.")
             #try for each, then blockfrost
-            for txid in txid_list:
-                koiosindivrequest = self.koios_tx_utxos([txid])                
-                if koiosindivrequest.status_code == 200:
-                    senderaddrdict[txid] = koiosindivrequest.json()[0]['inputs'][0]['payment_addr']['bech32']
+        for txid in txid_list:
+            koiosindivrequest = self.koios_tx_utxos([txid])
+            if koiosindivrequest.status_code == 200:
+                senderaddrdict[txid] = koiosindivrequest.json()[0]['inputs'][0]['payment_addr']['bech32']
 
-                #blockfrost
-                else:
-                    self.printiflog(f"Koios individually request failed - reattempting with Blockfrost.")
-                    senderaddress = None
-                    attempt = 0
-                    while senderaddress is None:
-                        try:
-                            senderaddress = self.api.transaction_utxos(hash=txid).inputs[0].address
-                        except ApiError as e:
-                            attempt += 1
-                            self.printiflogprint(f"Blockfrost sender address fetch attempt {attempt} API Error {str(e.status_code)} - reattempting.")
-                            time.sleep(3)
-                    
-                    senderaddrdict[txid] = senderaddress
-            return senderaddrdict
+            else:
+                self.printiflog(
+                    "Koios individually request failed - reattempting with Blockfrost."
+                )
+
+                senderaddress = None
+                attempt = 0
+                while senderaddress is None:
+                    try:
+                        senderaddress = self.api.transaction_utxos(hash=txid).inputs[0].address
+                    except ApiError as e:
+                        attempt += 1
+                        self.printiflogprint(f"Blockfrost sender address fetch attempt {attempt} API Error {str(e.status_code)} - reattempting.")
+                        time.sleep(3)
+
+                senderaddrdict[txid] = senderaddress
+        return senderaddrdict
 
 
     #last PROCESSED SLOT
@@ -294,8 +299,10 @@ class Faucet:
 
     @staticmethod
     def koios_tx_utxos(txhashlist):
-        koiosrequest = requests.post("https://api.koios.rest/api/v0/tx_utxos", json={"_tx_hashes":txhashlist})
-        return koiosrequest
+        return requests.post(
+            "https://api.koios.rest/api/v0/tx_utxos",
+            json={"_tx_hashes": txhashlist},
+        )
 
     def printiflog(self, printstring):
         if self.logging:
@@ -312,7 +319,15 @@ class Faucet:
 
     @staticmethod
     def isostringtodt(isostring):
-        return datetime(int(isostring[0:4]), int(isostring[5:7]), int(isostring[8:10]),int(isostring[11:13]),int(isostring[14:16]),int(isostring[17:19]),1)
+        return datetime(
+            int(isostring[:4]),
+            int(isostring[5:7]),
+            int(isostring[8:10]),
+            int(isostring[11:13]),
+            int(isostring[14:16]),
+            int(isostring[17:19]),
+            1,
+        )
 
 
     def generateLog(self, initTokenbalance, totalpulls):
@@ -439,7 +454,7 @@ class Swapper:
         self.bundlesize = bundlesize
 
 
-        for i in range(loops):
+        for _ in range(loops):
             timenow = datetime.now()
             print(f"SYS TIME:    {str(timenow)[:-7]}")
 
@@ -459,23 +474,19 @@ class Swapper:
 
         except FileNotFoundError:
             raise FileNotFoundError("You have not generated the blockchain index files. Please call generateLog.")
-
-
 ############################################################################################################
 
         currenttime = datetime.utcnow()
         print(f"TIME INT:    {str(lasttime)[:-7]} to {str(currenttime)[:-7]}")
         newtxs = self.wallet.txsfiltered(lasttime)
 
-        incomingtxs = []
-        for tx in newtxs:
-            #local_inputs == [] means incoming transaction - these are necessarily confirmed already
-            if tx.local_inputs == []:
-                if tx.inserted_at.absolute_slot > lastslot:
-                    incomingtxs.append(tx)
+        incomingtxs = [
+            tx
+            for tx in newtxs
+            if tx.local_inputs == [] and tx.inserted_at.absolute_slot > lastslot
+        ]
 
-
-        if len(incomingtxs) > 0:
+        if incomingtxs:
             newlastslot = incomingtxs[-1].inserted_at.absolute_slot
             newlasttime = self.isostringtodt(incomingtxs[-1].inserted_at.time)
             self.writeLastTime(newlasttime)
@@ -517,7 +528,7 @@ class Swapper:
 
 
 
-        if len(sendlist)>0:
+        if sendlist:
             self.autoSendAssets(sendlist, passphrase)
             print(f"TKN SWAPPED: {str(tokensswapped)}")
             self.writeAssetBalance(remainingtokens-tokensswapped)
@@ -587,7 +598,15 @@ class Swapper:
 
     @staticmethod
     def isostringtodt(isostring):
-        return datetime(int(isostring[0:4]), int(isostring[5:7]), int(isostring[8:10]),int(isostring[11:13]),int(isostring[14:16]),int(isostring[17:19]),1)
+        return datetime(
+            int(isostring[:4]),
+            int(isostring[5:7]),
+            int(isostring[8:10]),
+            int(isostring[11:13]),
+            int(isostring[14:16]),
+            int(isostring[17:19]),
+            1,
+        )
 
 
     def generateLog(self, initTokenbalance):
