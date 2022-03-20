@@ -13,7 +13,7 @@ import random
 import json
 import os
 import requests
-
+import functools
 #TODO CREATE A SUPERCLASS FOR FAUCET AND SWAP
 #Make print statements occur at the top level not the bottom
 #make the write to log methods return instead of print directly
@@ -33,6 +33,54 @@ import requests
 #for maximum throughput I would recommend having at least 500ADA in the wallet, or even 2000+ if you want to
 #loop 5 times a minute and approach Blockfrost's bottleneck of 500 tx per minute
 
+host_port = "http://192.168.20.12:3000/"
+
+def send_req(url_payload: str) -> requests.Response:
+    return requests.get(host_port + url_payload)
+
+
+def fromHex(hexStr: str) -> str:
+    return bytearray.fromhex(hexStr).decode()
+
+
+def toHex(utfStr: str) -> str:
+    return utfStr.encode("utf-8").hex()
+
+
+def remove_slash_x(raw_hex_str: str) -> str:
+    return raw_hex_str[2:]
+
+
+def get_tx_dbid_list(txid_list: list[str]) -> list[dict]:
+    return send_req("tx?hash=in.({})".format(functools.reduce(lambda a, b: a+','+b, ['\\x'+txid for txid in txid_list]))).json()
+
+
+def get_tx_out_dbid_list(txdbid_list: list[int]) -> list[dict]:
+    return send_req("tx_out?tx_id=in.({})".format(functools.reduce(lambda a, b: str(a)+','+str(b), txdbid_list))).json()
+
+
+def get_ma_tx_out_dbid_list(tx_out_dbid_list: list[int]) -> list[dict]:
+    return send_req("ma_tx_out?tx_out_id=in.({})".format(functools.reduce(lambda a, b: str(a)+','+str(b), tx_out_dbid_list))).json()
+
+
+def get_multi_asset_dbid_list(list_idents: int) -> list[dict]:
+    if list_idents:
+        return send_req("multi_asset?id=in.({})&select=id,policy,name".format(functools.reduce(lambda a, b: a+','+b, [str(ident) for ident in list_idents]))).json()
+    else:
+        return []
+
+
+def get_metadata_dbid_list(txdbid_list: list[int]) -> list[dict]:
+    return send_req("tx_metadata?tx_id=in.({})".format(functools.reduce(lambda a, b: str(a)+','+str(b), txdbid_list))).json()
+
+
+def get_tx_in_dbid_list(txdbid_list: list[int]) -> list[dict]:
+    return send_req("tx_in?tx_in_id=in.({})".format(functools.reduce(lambda a, b: str(a)+','+str(b), txdbid_list))).json()
+
+
+def get_tx_by_dbid_list(txdbid_list: list[int]) -> list[dict]:
+    return send_req("tx?id=in.({})".format(functools.reduce(lambda a, b: str(a)+','+str(b), txdbid_list))).json()
+
 
 
 class Faucet:
@@ -46,7 +94,6 @@ class Faucet:
     #port: int - port that cardano-wallet is broadcasting on
 
     def __init__(self, apiKey,assetName, assetPolicyID, walletID, faucetAddr,pullcost=2000000, pullprofit=500000, proportionperpull=0.000015, port=8090, host="localhost", discord = False):
-        self.api = BlockFrostApi(project_id=apiKey)
         self.assetName = assetName
         self.assetPolicyID = assetPolicyID
         self.assetIDObj = AssetID(assetName,assetPolicyID)
@@ -71,7 +118,7 @@ class Faucet:
     def runloop(self, passphrase, period=300,loops = 10000,bundlesize=20, multsallowed = 1):
         self.bundlesize = bundlesize
 
-        for _ in range(loops):
+        for i in range(loops):
             timenow = datetime.now()
             self.printiflog(f"SYS TIME:    {str(timenow)[:-7]}")
 
@@ -93,10 +140,11 @@ class Faucet:
 
         assetFilteredTxs = self.filtered_incomings_discard_assets(incomingtxs)
         senderaddrdict = self.get_sender_addr_dict([tx.txid for tx in assetFilteredTxs])
-
+    
         sendlist, numpulls = self.prepare_sendlist(assetFilteredTxs, senderaddrdict, multsallowed, remainingtokens)
         if self.discord:
-            if prepare_topups := self.prepare_discord_topups():
+            prepare_topups = self.prepare_discord_topups()
+            if prepare_topups:
                 sendlist += prepare_topups
                 discord_topup = True
             else:
@@ -185,32 +233,26 @@ class Faucet:
                 senderaddr = self.get_sender_addr_dict([tx.txid])[tx.txid]
 
             txoutputs = list(tx.local_outputs)
-
+            
             countedoutput = txoutputs[0]
             extraoutputs = txoutputs[1:]
 
             if countedoutput.amount >= self.pullcost:
                 validmults = int(min(multsallowed, countedoutput.amount // self.pullcost))
                 returnada = countedoutput.amount - validmults*self.pullprofit
-
+                    
                 randomyield = 0
-                for _ in range(validmults):
+                for i in range(validmults):
                     onetrial = self.calculateYield(self.proportionperpull, remainingtokens)
                     remainingtokens -= onetrial
                     randomyield += onetrial
-
+                    
                 sendlist.append({"senderaddr": senderaddr, "pullyield": randomyield, "returnada": returnada})
-
+                    
                 numpulls += validmults
 
-            sendlist.extend(
-                {
-                    "senderaddr": senderaddr,
-                    "pullyield": 0,
-                    "returnada": output.amount,
-                }
-                for output in extraoutputs
-            )
+            for output in extraoutputs:
+                sendlist.append({"senderaddr": senderaddr, "pullyield": 0, "returnada": output.amount})
 
         return sendlist, numpulls
 
@@ -240,8 +282,9 @@ class Faucet:
             if tx.local_inputs == []:
                 if tx.inserted_at.absolute_slot > lastslot:
                     incomingtxs.append(tx)
-            elif tx.txid in self.pending_discord_topup:
-                self.pending_discord_topup.remove(tx.txid)
+            else:
+                if tx.txid in self.pending_discord_topup:
+                    self.pending_discord_topup.remove(tx.txid)
         if incomingtxs:
             newlastslot = newtxs[-1].inserted_at.absolute_slot
             newlasttime = self.isostringtodt(newtxs[-1].inserted_at.time)
@@ -251,58 +294,158 @@ class Faucet:
         return incomingtxs
 
     def filtered_incomings_discard_assets(self, incomingtxs):
-        return [
-            tx
-            for tx in incomingtxs
-            if not bool(
-                sum(output.assets != [] for output in list(tx.local_outputs))
-            )
-        ]
+        assetFilteredTxs = []
+        for tx in incomingtxs:
+            if not bool(sum(1 for output in list(tx.local_outputs) if output.assets != [])):
+                assetFilteredTxs.append(tx)
+        
+        return assetFilteredTxs
 
     def get_sender_addr_dict(self, txid_list: list[str]) -> dict[str, str]:
-        koiosrequest = self.koios_tx_utxos(txid_list)
 
-        if koiosrequest.status_code == 200:
-            return {txdict['tx_hash']:txdict['inputs'][0]['payment_addr']['bech32'] for txdict in koiosrequest.json()}
+        return_list = self.db_sync_tx_utxos(txid_list)
+        return {txdict['tx_hash']:txdict['inputs'][0]['payment_addr']['bech32'] for txdict in return_list}
 
-        senderaddrdict = {}
-        self.printiflog("Koios group request failed - reattempting individually.")
-            #try for each, then blockfrost
-        for txid in txid_list:
-            koiosindivrequest = self.koios_tx_utxos([txid])
-            if koiosindivrequest.status_code == 200:
-                senderaddrdict[txid] = koiosindivrequest.json()[0]['inputs'][0]['payment_addr']['bech32']
-
-            else:
-                self.printiflog(
-                    "Koios individually request failed - reattempting with Blockfrost."
-                )
-
-                senderaddress = None
-                attempt = 0
-                while senderaddress is None:
-                    try:
-                        senderaddress = self.api.transaction_utxos(hash=txid).inputs[0].address
-                    except ApiError as e:
-                        attempt += 1
-                        self.printiflogprint(f"Blockfrost sender address fetch attempt {attempt} API Error {str(e.status_code)} - reattempting.")
-                        time.sleep(3)
-
-                senderaddrdict[txid] = senderaddress
-        return senderaddrdict
+    
+    def db_sync_tx_utxos(self, txhashlist):
+        return self.get_postgrest_req_caller(txhashlist)
 
 
-    #last PROCESSED SLOT
-    #format is blockno:indexno
-    #returns tuple! make sure you match
+    def get_postgrest_req_caller(self, list_txids: list[str]):
+
+        chunks_of_1k, remainder = divmod(len(list_txids), 100)
+        request_chunk_array = []
+
+        for i in range(chunks_of_1k):
+            request_chunk_array.append(list_txids[100*i:100*(i+1)])
+        request_chunk_array.append(list_txids[100*chunks_of_1k:])
+
+        txs_list_json = []
+
+        chunkcount = 1
+        for chunk in request_chunk_array:
+            while True:
+                try:
+                    txs_list_json_local = self.get_postgrest_req(chunk)
+                    break
+                except Exception as e:
+                    if self.logging:
+                        print(e)
+                        print(f"Postgrest chunk request failed. Requerying in 5 seconds...")
+                    time.sleep(5)
+
+            txs_list_json += txs_list_json_local
+            chunkcount += 1
+        
+        return txs_list_json
+    
+        
+    def get_postgrest_req(self,list_txids: list[str]):
+        if not list_txids: return []
+        tx_list = get_tx_dbid_list(list_txids)
+        tx_out_list = get_tx_out_dbid_list(
+            (txdbids := [tx['id'] for tx in tx_list]))
+        metadata_list = get_metadata_dbid_list(txdbids)
+        tx_ma_out_list = get_ma_tx_out_dbid_list(
+            [tx_out['id'] for tx_out in tx_out_list])
+        multi_asset_list = get_multi_asset_dbid_list(
+            [ma_out['ident'] for ma_out in tx_ma_out_list])
+
+        tx_out_list_by_txdbid = {tx['id']: [] for tx in tx_list}
+        for tx_out in tx_out_list:
+            tx_out_list_by_txdbid[tx_out['tx_id']].append(tx_out)
+
+        metadata_list_by_txdbid = {tx['id']: [] for tx in tx_list}
+        for metadata in metadata_list:
+            metadata_list_by_txdbid[metadata['tx_id']].append(metadata)
+
+        tx_ma_out_list_by_tx_out_dbid = {
+            tx_out['id']: [] for tx_out in tx_out_list}
+        for tx_ma_out in tx_ma_out_list:
+            tx_ma_out_list_by_tx_out_dbid[tx_ma_out['tx_out_id']].append(tx_ma_out)
+
+        multi_asset_list_by_dbid = {ma['id']: ma for ma in multi_asset_list}
+
+        # inputs
+        tx_in_list = get_tx_in_dbid_list(txdbids)
+        tx_in_list_by_txdbid = {tx['id']: [] for tx in tx_list}
+        for tx_in in tx_in_list:
+            tx_in_list_by_txdbid[tx_in['tx_in_id']].append(tx_in)
+
+        tx_in_output_keys = [(txin['tx_out_id'], txin['tx_out_index'])
+                            for txin in tx_in_list]
+        tx_in_out_list = list(filter(lambda txout: (txout['tx_id'], txout['index']) in tx_in_output_keys, get_tx_out_dbid_list(
+            txin['tx_out_id'] for txin in tx_in_list)))
+        tx_in_out_dict = {(txout['tx_id'], txout['index'])                      : txout for txout in tx_in_out_list}
+
+        tx_in_tx_list = get_tx_by_dbid_list([tx['tx_id'] for tx in tx_in_out_list])
+        tx_in_tx_to_tx_hash = {tx['id']: remove_slash_x(
+            tx['hash']) for tx in tx_in_tx_list}
+
+        # recurse once to get input info
+
+        returnlist = []
+        for tx in tx_list:
+            tx_returndict = {'tx_hash': remove_slash_x(
+                tx['hash']), 'block_height': tx['block_id'], 'tx_block_index': tx['block_index'], 'fee': tx['fee']}
+
+            outputs = tx_out_list_by_txdbid[tx['id']]
+            outputs_list = []
+            for output in outputs:
+                output_dict = {"payment_addr": {"bech32": output['address'], "cred": remove_slash_x(
+                    output["payment_cred"])}, "value": output['value'], "tx_index": output['index']}
+
+                tx_ma_outs = tx_ma_out_list_by_tx_out_dbid[output['id']]
+                assets_list = []
+                for tx_ma_out in tx_ma_outs:
+                    asset_dict = {'quantity': tx_ma_out['quantity']}
+                    multi_asset = multi_asset_list_by_dbid[tx_ma_out['ident']]
+                    asset_dict['policy_id'] = remove_slash_x(multi_asset['policy'])
+                    asset_dict['asset_name'] = remove_slash_x(multi_asset['name'])
+                    assets_list.append(asset_dict)
+                output_dict['asset_list'] = assets_list
+
+                outputs_list.append(output_dict)
+
+            tx_returndict['outputs'] = outputs_list
+
+            metadata_list = []
+            for entry in metadata_list_by_txdbid[tx['id']]:
+                key = int(entry['key'])
+                json = entry['json']
+                metadata_list.append({'key': key, 'json': json})
+            tx_returndict['metadata'] = metadata_list
+
+            # inputs
+            inputs = tx_in_list_by_txdbid[tx['id']]
+            inputs_list = []
+            for input in inputs:
+                input_dict = {}
+                key_tuple = (input['tx_out_id'], input['tx_out_index'])
+                corresponding_output = tx_in_out_dict[key_tuple]
+
+                input_dict['payment_addr'] = {'bech32': corresponding_output['address'], 'cred': remove_slash_x(
+                    corresponding_output["payment_cred"])}
+                input_dict['value'] = corresponding_output['value']
+                input_dict['tx_hash'] = tx_in_tx_to_tx_hash[corresponding_output['tx_id']]
+                input_dict['tx_index'] = input['tx_out_index']
+
+                inputs_list.append(input_dict)
+
+            tx_returndict['inputs'] = inputs_list
+
+            returnlist.append(tx_returndict)
+
+        return returnlist
 
 
-    @staticmethod
-    def koios_tx_utxos(txhashlist):
-        return requests.post(
-            "https://api.koios.rest/api/v0/tx_utxos",
-            json={"_tx_hashes": txhashlist},
-        )
+
+
+
+
+
+
+
 
     def printiflog(self, printstring):
         if self.logging:
@@ -319,15 +462,7 @@ class Faucet:
 
     @staticmethod
     def isostringtodt(isostring):
-        return datetime(
-            int(isostring[:4]),
-            int(isostring[5:7]),
-            int(isostring[8:10]),
-            int(isostring[11:13]),
-            int(isostring[14:16]),
-            int(isostring[17:19]),
-            1,
-        )
+        return datetime(int(isostring[0:4]), int(isostring[5:7]), int(isostring[8:10]),int(isostring[11:13]),int(isostring[14:16]),int(isostring[17:19]),1)
 
 
     def generateLog(self, initTokenbalance, totalpulls):
@@ -454,7 +589,7 @@ class Swapper:
         self.bundlesize = bundlesize
 
 
-        for _ in range(loops):
+        for i in range(loops):
             timenow = datetime.now()
             print(f"SYS TIME:    {str(timenow)[:-7]}")
 
@@ -474,19 +609,23 @@ class Swapper:
 
         except FileNotFoundError:
             raise FileNotFoundError("You have not generated the blockchain index files. Please call generateLog.")
+
+
 ############################################################################################################
 
         currenttime = datetime.utcnow()
         print(f"TIME INT:    {str(lasttime)[:-7]} to {str(currenttime)[:-7]}")
         newtxs = self.wallet.txsfiltered(lasttime)
 
-        incomingtxs = [
-            tx
-            for tx in newtxs
-            if tx.local_inputs == [] and tx.inserted_at.absolute_slot > lastslot
-        ]
+        incomingtxs = []
+        for tx in newtxs:
+            #local_inputs == [] means incoming transaction - these are necessarily confirmed already
+            if tx.local_inputs == []:
+                if tx.inserted_at.absolute_slot > lastslot:
+                    incomingtxs.append(tx)
 
-        if incomingtxs:
+
+        if len(incomingtxs) > 0:
             newlastslot = incomingtxs[-1].inserted_at.absolute_slot
             newlasttime = self.isostringtodt(incomingtxs[-1].inserted_at.time)
             self.writeLastTime(newlasttime)
@@ -528,7 +667,7 @@ class Swapper:
 
 
 
-        if sendlist:
+        if len(sendlist)>0:
             self.autoSendAssets(sendlist, passphrase)
             print(f"TKN SWAPPED: {str(tokensswapped)}")
             self.writeAssetBalance(remainingtokens-tokensswapped)
@@ -598,15 +737,7 @@ class Swapper:
 
     @staticmethod
     def isostringtodt(isostring):
-        return datetime(
-            int(isostring[:4]),
-            int(isostring[5:7]),
-            int(isostring[8:10]),
-            int(isostring[11:13]),
-            int(isostring[14:16]),
-            int(isostring[17:19]),
-            1,
-        )
+        return datetime(int(isostring[0:4]), int(isostring[5:7]), int(isostring[8:10]),int(isostring[11:13]),int(isostring[14:16]),int(isostring[17:19]),1)
 
 
     def generateLog(self, initTokenbalance):
