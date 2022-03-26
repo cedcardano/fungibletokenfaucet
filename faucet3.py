@@ -344,7 +344,7 @@ class Faucet:
         ]
 
     def get_sender_addr_dict(self, txid_list: list[str]) -> dict[str, str]:
-        txs_list = self.cardano_gql_api(txid_list)
+        txs_list = self.cardano_gql_api.txs(txid_list)
         return {txdict['hash']: txdict['inputs'][0]['address'] for txdict in txs_list}
     # def get_sender_addr_dict(self, txid_list: list[str]) -> dict[str, str]:
 
