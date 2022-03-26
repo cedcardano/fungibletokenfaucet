@@ -14,6 +14,7 @@ import json
 import os
 import requests
 import functools
+import operator
 from datetime import timezone
 # TODO CREATE A SUPERCLASS FOR FAUCET AND SWAP
 # Make print statements occur at the top level not the bottom
@@ -34,67 +35,67 @@ from datetime import timezone
 # for maximum throughput I would recommend having at least 500ADA in the wallet, or even 2000+ if you want to
 # loop 5 times a minute and approach Blockfrost's bottleneck of 500 tx per minute
 
-host_port = "http://192.168.20.12:3000/"
+# host_port = "http://192.168.20.12:3000/"
 
 
-def send_req(url_payload: str) -> requests.Response:
-    return requests.get(host_port + url_payload)
+# def send_req(url_payload: str) -> requests.Response:
+#     return requests.get(host_port + url_payload)
 
 
-def fromHex(hexStr: str) -> str:
-    return bytearray.fromhex(hexStr).decode()
+# def fromHex(hexStr: str) -> str:
+#     return bytearray.fromhex(hexStr).decode()
 
 
-def toHex(utfStr: str) -> str:
-    return utfStr.encode("utf-8").hex()
+# def toHex(utfStr: str) -> str:
+#     return utfStr.encode("utf-8").hex()
 
 
-def remove_slash_x(raw_hex_str: str) -> str:
-    return raw_hex_str[2:]
+# def remove_slash_x(raw_hex_str: str) -> str:
+#     return raw_hex_str[2:]
 
 
-def get_tx_dbid_list(txid_list: list[str]) -> list[dict]:
-    return send_req("tx?hash=in.({})".format(functools.reduce(lambda a, b: a+','+b, ['\\x'+txid for txid in txid_list]))).json()
+# def get_tx_dbid_list(txid_list: list[str]) -> list[dict]:
+#     return send_req("tx?hash=in.({})".format(functools.reduce(lambda a, b: a+','+b, ['\\x'+txid for txid in txid_list]))).json()
 
 
-def get_tx_out_dbid_list(txdbid_list: list[int]) -> list[dict]:
-    return send_req(
-        f"tx_out?tx_id=in.({functools.reduce(lambda a, b: f'{str(a)},{str(b)}', txdbid_list)})"
-    ).json()
+# def get_tx_out_dbid_list(txdbid_list: list[int]) -> list[dict]:
+#     return send_req(
+#         f"tx_out?tx_id=in.({functools.reduce(lambda a, b: f'{str(a)},{str(b)}', txdbid_list)})"
+#     ).json()
 
 
-def get_ma_tx_out_dbid_list(tx_out_dbid_list: list[int]) -> list[dict]:
-    return send_req(
-        f"ma_tx_out?tx_out_id=in.({functools.reduce(lambda a, b: str(a)+','+str(b), tx_out_dbid_list)})"
-    ).json()
+# def get_ma_tx_out_dbid_list(tx_out_dbid_list: list[int]) -> list[dict]:
+#     return send_req(
+#         f"ma_tx_out?tx_out_id=in.({functools.reduce(lambda a, b: str(a)+','+str(b), tx_out_dbid_list)})"
+#     ).json()
 
 
-def get_multi_asset_dbid_list(list_idents: int) -> list[dict]:
-    if list_idents:
-        return send_req(
-            f"multi_asset?id=in.({functools.reduce(lambda a, b: f'{a},{b}', [str(ident) for ident in list_idents])})&select=id,policy,name"
-        ).json()
+# def get_multi_asset_dbid_list(list_idents: int) -> list[dict]:
+#     if list_idents:
+#         return send_req(
+#             f"multi_asset?id=in.({functools.reduce(lambda a, b: f'{a},{b}', [str(ident) for ident in list_idents])})&select=id,policy,name"
+#         ).json()
 
-    else:
-        return []
-
-
-def get_metadata_dbid_list(txdbid_list: list[int]) -> list[dict]:
-    return send_req(
-        f"tx_metadata?tx_id=in.({functools.reduce(lambda a, b: f'{str(a)},{str(b)}', txdbid_list)})"
-    ).json()
+#     else:
+#         return []
 
 
-def get_tx_in_dbid_list(txdbid_list: list[int]) -> list[dict]:
-    return send_req(
-        f"tx_in?tx_in_id=in.({functools.reduce(lambda a, b: f'{str(a)},{str(b)}', txdbid_list)})"
-    ).json()
+# def get_metadata_dbid_list(txdbid_list: list[int]) -> list[dict]:
+#     return send_req(
+#         f"tx_metadata?tx_id=in.({functools.reduce(lambda a, b: f'{str(a)},{str(b)}', txdbid_list)})"
+#     ).json()
 
 
-def get_tx_by_dbid_list(txdbid_list: list[int]) -> list[dict]:
-    return send_req(
-        f"tx?id=in.({functools.reduce(lambda a, b: f'{str(a)},{str(b)}', txdbid_list)})"
-    ).json()
+# def get_tx_in_dbid_list(txdbid_list: list[int]) -> list[dict]:
+#     return send_req(
+#         f"tx_in?tx_in_id=in.({functools.reduce(lambda a, b: f'{str(a)},{str(b)}', txdbid_list)})"
+#     ).json()
+
+
+# def get_tx_by_dbid_list(txdbid_list: list[int]) -> list[dict]:
+#     return send_req(
+#         f"tx?id=in.({functools.reduce(lambda a, b: f'{str(a)},{str(b)}', txdbid_list)})"
+#     ).json()
 
 
 class Faucet:
@@ -115,6 +116,8 @@ class Faucet:
             walletID, backend=WalletREST(port=port, host=host))
         self.faucetAddr = faucetAddr
         self.bundlesize = None
+
+        self.cardano_gql_api = CardanoGQL("https://graphql-api.mainnet.dandelion.link/")
 
         self.logFile = assetName+assetPolicyID+faucetAddr+"v2.json"
 
@@ -341,146 +344,149 @@ class Faucet:
         ]
 
     def get_sender_addr_dict(self, txid_list: list[str]) -> dict[str, str]:
+        txs_list = self.cardano_gql_api(txid_list)
+        return {txdict['hash']: txdict['inputs'][0]['address'] for txdict in txs_list}
+    # def get_sender_addr_dict(self, txid_list: list[str]) -> dict[str, str]:
 
-        return_list = self.db_sync_tx_utxos(txid_list)
-        return {txdict['tx_hash']: txdict['inputs'][0]['payment_addr']['bech32'] for txdict in return_list}
+    #     return_list = self.db_sync_tx_utxos(txid_list)
+    #     return {txdict['tx_hash']: txdict['inputs'][0]['payment_addr']['bech32'] for txdict in return_list}
 
-    def db_sync_tx_utxos(self, txhashlist):
-        return self.get_postgrest_req_caller(txhashlist)
+    # def db_sync_tx_utxos(self, txhashlist):
+    #     return self.get_postgrest_req_caller(txhashlist)
 
-    def get_postgrest_req_caller(self, list_txids: list[str]):
+    # def get_postgrest_req_caller(self, list_txids: list[str]):
 
-        chunks_of_1k, remainder = divmod(len(list_txids), 100)
-        request_chunk_array = [
-            list_txids[100 * i: 100 * (i + 1)] for i in range(chunks_of_1k)
-        ]
+    #     chunks_of_1k, remainder = divmod(len(list_txids), 100)
+    #     request_chunk_array = [
+    #         list_txids[100 * i: 100 * (i + 1)] for i in range(chunks_of_1k)
+    #     ]
 
-        request_chunk_array.append(list_txids[100*chunks_of_1k:])
+    #     request_chunk_array.append(list_txids[100*chunks_of_1k:])
 
-        txs_list_json = []
+    #     txs_list_json = []
 
-        for chunkcount, chunk in enumerate(request_chunk_array, start=1):
-            while True:
-                try:
-                    txs_list_json_local = self.get_postgrest_req(chunk)
-                    break
-                except Exception as e:
-                    if self.logging:
-                        print(e)
-                        print(
-                            "Postgrest chunk request failed. Requerying in 5 seconds...")
-                    time.sleep(5)
-            txs_list_json += txs_list_json_local
-        return txs_list_json
+    #     for chunkcount, chunk in enumerate(request_chunk_array, start=1):
+    #         while True:
+    #             try:
+    #                 txs_list_json_local = self.get_postgrest_req(chunk)
+    #                 break
+    #             except Exception as e:
+    #                 if self.logging:
+    #                     print(e)
+    #                     print(
+    #                         "Postgrest chunk request failed. Requerying in 5 seconds...")
+    #                 time.sleep(5)
+    #         txs_list_json += txs_list_json_local
+    #     return txs_list_json
 
-    def get_postgrest_req(self, list_txids: list[str]):
-        if not list_txids:
-            return []
-        tx_list = get_tx_dbid_list(list_txids)
-        tx_out_list = get_tx_out_dbid_list(
-            (txdbids := [tx['id'] for tx in tx_list]))
-        metadata_list = get_metadata_dbid_list(txdbids)
-        tx_ma_out_list = get_ma_tx_out_dbid_list(
-            [tx_out['id'] for tx_out in tx_out_list])
-        multi_asset_list = get_multi_asset_dbid_list(
-            [ma_out['ident'] for ma_out in tx_ma_out_list])
+    # def get_postgrest_req(self, list_txids: list[str]):
+    #     if not list_txids:
+    #         return []
+    #     tx_list = get_tx_dbid_list(list_txids)
+    #     tx_out_list = get_tx_out_dbid_list(
+    #         (txdbids := [tx['id'] for tx in tx_list]))
+    #     metadata_list = get_metadata_dbid_list(txdbids)
+    #     tx_ma_out_list = get_ma_tx_out_dbid_list(
+    #         [tx_out['id'] for tx_out in tx_out_list])
+    #     multi_asset_list = get_multi_asset_dbid_list(
+    #         [ma_out['ident'] for ma_out in tx_ma_out_list])
 
-        tx_out_list_by_txdbid = {tx['id']: [] for tx in tx_list}
-        for tx_out in tx_out_list:
-            tx_out_list_by_txdbid[tx_out['tx_id']].append(tx_out)
+    #     tx_out_list_by_txdbid = {tx['id']: [] for tx in tx_list}
+    #     for tx_out in tx_out_list:
+    #         tx_out_list_by_txdbid[tx_out['tx_id']].append(tx_out)
 
-        metadata_list_by_txdbid = {tx['id']: [] for tx in tx_list}
-        for metadata in metadata_list:
-            metadata_list_by_txdbid[metadata['tx_id']].append(metadata)
+    #     metadata_list_by_txdbid = {tx['id']: [] for tx in tx_list}
+    #     for metadata in metadata_list:
+    #         metadata_list_by_txdbid[metadata['tx_id']].append(metadata)
 
-        tx_ma_out_list_by_tx_out_dbid = {
-            tx_out['id']: [] for tx_out in tx_out_list}
-        for tx_ma_out in tx_ma_out_list:
-            tx_ma_out_list_by_tx_out_dbid[tx_ma_out['tx_out_id']].append(
-                tx_ma_out)
+    #     tx_ma_out_list_by_tx_out_dbid = {
+    #         tx_out['id']: [] for tx_out in tx_out_list}
+    #     for tx_ma_out in tx_ma_out_list:
+    #         tx_ma_out_list_by_tx_out_dbid[tx_ma_out['tx_out_id']].append(
+    #             tx_ma_out)
 
-        multi_asset_list_by_dbid = {ma['id']: ma for ma in multi_asset_list}
+    #     multi_asset_list_by_dbid = {ma['id']: ma for ma in multi_asset_list}
 
-        # inputs
-        tx_in_list = get_tx_in_dbid_list(txdbids)
-        tx_in_list_by_txdbid = {tx['id']: [] for tx in tx_list}
-        for tx_in in tx_in_list:
-            tx_in_list_by_txdbid[tx_in['tx_in_id']].append(tx_in)
+    #     # inputs
+    #     tx_in_list = get_tx_in_dbid_list(txdbids)
+    #     tx_in_list_by_txdbid = {tx['id']: [] for tx in tx_list}
+    #     for tx_in in tx_in_list:
+    #         tx_in_list_by_txdbid[tx_in['tx_in_id']].append(tx_in)
 
-        tx_in_output_keys = [(txin['tx_out_id'], txin['tx_out_index'])
-                             for txin in tx_in_list]
-        tx_in_out_list = list(filter(lambda txout: (txout['tx_id'], txout['index']) in tx_in_output_keys, get_tx_out_dbid_list(
-            txin['tx_out_id'] for txin in tx_in_list)))
-        tx_in_out_dict = {(txout['tx_id'], txout['index'])                          : txout for txout in tx_in_out_list}
+    #     tx_in_output_keys = [(txin['tx_out_id'], txin['tx_out_index'])
+    #                          for txin in tx_in_list]
+    #     tx_in_out_list = list(filter(lambda txout: (txout['tx_id'], txout['index']) in tx_in_output_keys, get_tx_out_dbid_list(
+    #         txin['tx_out_id'] for txin in tx_in_list)))
+    #     tx_in_out_dict = {(txout['tx_id'], txout['index'])                          : txout for txout in tx_in_out_list}
 
-        tx_in_tx_list = get_tx_by_dbid_list(
-            [tx['tx_id'] for tx in tx_in_out_list])
-        tx_in_tx_to_tx_hash = {tx['id']: remove_slash_x(
-            tx['hash']) for tx in tx_in_tx_list}
+    #     tx_in_tx_list = get_tx_by_dbid_list(
+    #         [tx['tx_id'] for tx in tx_in_out_list])
+    #     tx_in_tx_to_tx_hash = {tx['id']: remove_slash_x(
+    #         tx['hash']) for tx in tx_in_tx_list}
 
-        # recurse once to get input info
+    #     # recurse once to get input info
 
-        returnlist = []
-        for tx in tx_list:
-            tx_returndict = {'tx_hash': remove_slash_x(
-                tx['hash']), 'block_height': tx['block_id'], 'tx_block_index': tx['block_index'], 'fee': tx['fee']}
+    #     returnlist = []
+    #     for tx in tx_list:
+    #         tx_returndict = {'tx_hash': remove_slash_x(
+    #             tx['hash']), 'block_height': tx['block_id'], 'tx_block_index': tx['block_index'], 'fee': tx['fee']}
 
-            outputs = tx_out_list_by_txdbid[tx['id']]
-            outputs_list = []
-            for output in outputs:
-                output_dict = {"payment_addr": {"bech32": output['address'], "cred": remove_slash_x(
-                    output["payment_cred"])}, "value": output['value'], "tx_index": output['index']}
+    #         outputs = tx_out_list_by_txdbid[tx['id']]
+    #         outputs_list = []
+    #         for output in outputs:
+    #             output_dict = {"payment_addr": {"bech32": output['address'], "cred": remove_slash_x(
+    #                 output["payment_cred"])}, "value": output['value'], "tx_index": output['index']}
 
-                tx_ma_outs = tx_ma_out_list_by_tx_out_dbid[output['id']]
-                assets_list = []
-                for tx_ma_out in tx_ma_outs:
-                    asset_dict = {'quantity': tx_ma_out['quantity']}
-                    multi_asset = multi_asset_list_by_dbid[tx_ma_out['ident']]
-                    asset_dict['policy_id'] = remove_slash_x(
-                        multi_asset['policy'])
-                    asset_dict['asset_name'] = remove_slash_x(
-                        multi_asset['name'])
-                    assets_list.append(asset_dict)
-                output_dict['asset_list'] = assets_list
+    #             tx_ma_outs = tx_ma_out_list_by_tx_out_dbid[output['id']]
+    #             assets_list = []
+    #             for tx_ma_out in tx_ma_outs:
+    #                 asset_dict = {'quantity': tx_ma_out['quantity']}
+    #                 multi_asset = multi_asset_list_by_dbid[tx_ma_out['ident']]
+    #                 asset_dict['policy_id'] = remove_slash_x(
+    #                     multi_asset['policy'])
+    #                 asset_dict['asset_name'] = remove_slash_x(
+    #                     multi_asset['name'])
+    #                 assets_list.append(asset_dict)
+    #             output_dict['asset_list'] = assets_list
 
-                outputs_list.append(output_dict)
+    #             outputs_list.append(output_dict)
 
-            tx_returndict['outputs'] = outputs_list
+    #         tx_returndict['outputs'] = outputs_list
 
-            metadata_list = []
-            for entry in metadata_list_by_txdbid[tx['id']]:
-                key = int(entry['key'])
-                json = entry['json']
-                metadata_list.append({'key': key, 'json': json})
-            tx_returndict['metadata'] = metadata_list
+    #         metadata_list = []
+    #         for entry in metadata_list_by_txdbid[tx['id']]:
+    #             key = int(entry['key'])
+    #             json = entry['json']
+    #             metadata_list.append({'key': key, 'json': json})
+    #         tx_returndict['metadata'] = metadata_list
 
-            # inputs
-            inputs = tx_in_list_by_txdbid[tx['id']]
-            inputs_list = []
-            for input in inputs:
-                key_tuple = (input['tx_out_id'], input['tx_out_index'])
-                corresponding_output = tx_in_out_dict[key_tuple]
+    #         # inputs
+    #         inputs = tx_in_list_by_txdbid[tx['id']]
+    #         inputs_list = []
+    #         for input in inputs:
+    #             key_tuple = (input['tx_out_id'], input['tx_out_index'])
+    #             corresponding_output = tx_in_out_dict[key_tuple]
 
-                input_dict = {
-                    'payment_addr': {
-                        'bech32': corresponding_output['address'],
-                        'cred': remove_slash_x(
-                            corresponding_output["payment_cred"]
-                        ),
-                    }
-                }
+    #             input_dict = {
+    #                 'payment_addr': {
+    #                     'bech32': corresponding_output['address'],
+    #                     'cred': remove_slash_x(
+    #                         corresponding_output["payment_cred"]
+    #                     ),
+    #                 }
+    #             }
 
-                input_dict['value'] = corresponding_output['value']
-                input_dict['tx_hash'] = tx_in_tx_to_tx_hash[corresponding_output['tx_id']]
-                input_dict['tx_index'] = input['tx_out_index']
+    #             input_dict['value'] = corresponding_output['value']
+    #             input_dict['tx_hash'] = tx_in_tx_to_tx_hash[corresponding_output['tx_id']]
+    #             input_dict['tx_index'] = input['tx_out_index']
 
-                inputs_list.append(input_dict)
+    #             inputs_list.append(input_dict)
 
-            tx_returndict['inputs'] = inputs_list
+    #         tx_returndict['inputs'] = inputs_list
 
-            returnlist.append(tx_returndict)
+    #         returnlist.append(tx_returndict)
 
-        return returnlist
+    #     return returnlist
 
     def printiflog(self, printstring):
         if self.logging:
@@ -839,3 +845,124 @@ class Swapper:
     @staticmethod
     def hexdecode(hexstr):
         return bytes.fromhex(hexstr).decode("utf-8")
+
+
+class CardanoGQL:
+    def __init__(self, apiurl):
+        self.apiurl = apiurl
+
+    def get_cardano_gql_query(self, querystr, variables=None):
+        sendjson = {"query": querystr}
+        hdr = {"Content-Type": "application/json"}
+
+        if variables:
+            sendjson["variables"] = variables
+
+        req = requests.post(self.apiurl, headers=hdr, json=sendjson)
+
+        return req.json()['data']
+
+    def addr_txs(self, payment_address, from_block):
+        query = '''
+                query transactionsByHashesWithTokens(
+                    $address: String!
+                    $fromBlock: Int!
+                ) {
+                    blocks (
+                        where: { number : { _gte: $fromBlock}}
+                        order_by: {number: asc}
+                    ){
+                        number
+                        transactions (where: {_or:[
+                            {_or: {inputs:  {address:{_eq: $address}}}},
+                            {_or: {outputs: {address:{_eq: $address}}}}
+                        ]}) {
+                            hash
+                            inputs {
+                                address
+                                sourceTxIndex
+                                sourceTxHash
+                                value
+                                tokens {
+                                    asset {
+                                        assetId
+                                        assetName
+                                        policyId
+                                    }
+                                    quantity
+                                }       
+                            }
+                            outputs(order_by: { index: asc }) {
+                                index
+                                address
+                                value
+                                tokens {
+                                    asset {
+                                        assetId
+                                        assetName
+                                        policyId
+                                    }
+                                    quantity
+                                }
+                            }
+                            metadata {
+                                key
+                                value
+                            }
+                        }
+                    }
+                }
+                '''
+
+        variables = {"address": payment_address, "fromBlock": from_block}
+        return list(functools.reduce(operator.add, [block['transactions'] for block in self.get_cardano_gql_query(query, variables)['blocks'] if block['transactions']] ))
+
+    def txs(self, tx_hash_list):
+        query = '''
+                query transactionsByHashesWithTokens(
+                    $hashes: [Hash32Hex]!
+                ) {
+                    transactions(
+                        where: { hash: { _in: $hashes }}
+                    ) {
+                        hash
+                        inputs {
+                            address
+                            sourceTxIndex
+                            sourceTxHash
+                            value
+                            tokens {
+                                asset {
+                                    assetId
+                                    assetName
+                                    policyId
+                                }
+                                quantity
+                            }                        
+                        }
+                        outputs(order_by: { index: asc }) {
+                            index
+                            address
+                            value
+                            tokens {
+                                asset {
+                                    assetId
+                                    assetName
+                                    policyId
+                                }
+                                quantity
+                            }
+                        }
+                        metadata {
+                            key
+                            value
+                        }
+                    }
+                }
+                '''
+
+        variables = {"hashes": tx_hash_list}
+
+        return self.get_cardano_gql_query(query, variables)['transactions']
+
+
