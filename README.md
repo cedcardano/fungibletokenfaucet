@@ -5,6 +5,8 @@ Features a toggle for multioutput transaction support, sleep timers in case of c
 
 Requires a local node (can use Daedalus' socket) and a cardano-wallet server on localhost. You will also need a Blockfrost API key, since this script is intended to not require cardano-db-sync.
 
+EDIT: The faucet now requires communication with a db-sync instance to run - but this doesn't have to be local. You can use the community APIs provided by https://dandelion.link
+
 # How-to
 This file is intended to be run from Python Shell. It requires the same package installations as cardano-python - please ensure those are present in the venv.
 
