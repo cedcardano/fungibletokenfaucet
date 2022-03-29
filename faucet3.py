@@ -4,109 +4,17 @@ from cardano.backends.walletrest import WalletREST
 from cardano.simpletypes import AssetID
 from cardano.exceptions import CannotCoverFee
 from cardano.backends.walletrest.exceptions import RESTServerError
-from blockfrost import BlockFrostApi, ApiError, ApiUrls
 from decimal import *
 import time
 from datetime import datetime
-from datetime import timedelta
 import random
 import json
-import os
 import requests
 import functools
 import operator
 from datetime import timezone
-# TODO CREATE A SUPERCLASS FOR FAUCET AND SWAP
-# Make print statements occur at the top level not the bottom
-# make the write to log methods return instead of print directly
-# make runloop able to access all the variables - maybe as in instance variable only used for logging
-# so reliability isn't strict
-
-# the faucet requires at least the very least 3*bundlesize ADA to function (more if your tokens are bundled with more than ~1.5ADA for each output),
-# but throughput is greatly increased when there is more spare ADA in the wallet
-# due to increased fragmentation and therefore there are lots of UTXOs to select from.
-# throughput may be slow at first if your ADA is in a big chunk,
-# but should increase as UTXOs are increasingly fragmented and the risk of contention is reduced.
-# you can fragment the ADA yourself by breaking it into smaller UTXO chunks, but every distribution of 25 token UTXOs
-# comes with 25 change UTXOs, so fragmentation should happen by itself fairly quickly.
-# you can reduce bundlesize to reduce the minimum amount of ADA needed to operate, but this increases the number of transactions needed
-# and thus fees. Do NOT increase bundlesize past 25 - higher amounts risk transactions failing due to exceeding size limitations.
-
-# for maximum throughput I would recommend having at least 500ADA in the wallet, or even 2000+ if you want to
-# loop 5 times a minute and approach Blockfrost's bottleneck of 500 tx per minute
-
-# host_port = "http://192.168.20.12:3000/"
-
-
-# def send_req(url_payload: str) -> requests.Response:
-#     return requests.get(host_port + url_payload)
-
-
-# def fromHex(hexStr: str) -> str:
-#     return bytearray.fromhex(hexStr).decode()
-
-
-# def toHex(utfStr: str) -> str:
-#     return utfStr.encode("utf-8").hex()
-
-
-# def remove_slash_x(raw_hex_str: str) -> str:
-#     return raw_hex_str[2:]
-
-
-# def get_tx_dbid_list(txid_list: list[str]) -> list[dict]:
-#     return send_req("tx?hash=in.({})".format(functools.reduce(lambda a, b: a+','+b, ['\\x'+txid for txid in txid_list]))).json()
-
-
-# def get_tx_out_dbid_list(txdbid_list: list[int]) -> list[dict]:
-#     return send_req(
-#         f"tx_out?tx_id=in.({functools.reduce(lambda a, b: f'{str(a)},{str(b)}', txdbid_list)})"
-#     ).json()
-
-
-# def get_ma_tx_out_dbid_list(tx_out_dbid_list: list[int]) -> list[dict]:
-#     return send_req(
-#         f"ma_tx_out?tx_out_id=in.({functools.reduce(lambda a, b: str(a)+','+str(b), tx_out_dbid_list)})"
-#     ).json()
-
-
-# def get_multi_asset_dbid_list(list_idents: int) -> list[dict]:
-#     if list_idents:
-#         return send_req(
-#             f"multi_asset?id=in.({functools.reduce(lambda a, b: f'{a},{b}', [str(ident) for ident in list_idents])})&select=id,policy,name"
-#         ).json()
-
-#     else:
-#         return []
-
-
-# def get_metadata_dbid_list(txdbid_list: list[int]) -> list[dict]:
-#     return send_req(
-#         f"tx_metadata?tx_id=in.({functools.reduce(lambda a, b: f'{str(a)},{str(b)}', txdbid_list)})"
-#     ).json()
-
-
-# def get_tx_in_dbid_list(txdbid_list: list[int]) -> list[dict]:
-#     return send_req(
-#         f"tx_in?tx_in_id=in.({functools.reduce(lambda a, b: f'{str(a)},{str(b)}', txdbid_list)})"
-#     ).json()
-
-
-# def get_tx_by_dbid_list(txdbid_list: list[int]) -> list[dict]:
-#     return send_req(
-#         f"tx?id=in.({functools.reduce(lambda a, b: f'{str(a)},{str(b)}', txdbid_list)})"
-#     ).json()
-
 
 class Faucet:
-
-    # constructor
-    # apiKey: str - Blockfrost Api Key
-    # assetName: str - hex name of asset
-    # assetPolicyID: str - policy id of asset
-    # walletID: str - reference ID of wallet used by cardano-wallet
-    # faucetAddr: str - receiving address of faucet
-    # port: int - port that cardano-wallet is broadcasting on
 
     def __init__(self, apiKey, assetName, assetPolicyID, walletID, faucetAddr, pullcost=2000000, pullprofit=500000, proportionperpull=0.000015, port=8090, host="localhost", discord=False):
         self.assetName = assetName
@@ -117,7 +25,7 @@ class Faucet:
         self.faucetAddr = faucetAddr
         self.bundlesize = None
 
-        self.cardano_gql_api = CardanoGQL("https://graphql-api.mainnet.dandelion.link/")
+        self.cardano_gql_api = CardanoGQL("https://cedric.app/api/dbsync/graphql/")
 
         self.logFile = assetName+assetPolicyID+faucetAddr+"v2.json"
 
@@ -346,147 +254,6 @@ class Faucet:
     def get_sender_addr_dict(self, txid_list: list[str]) -> dict[str, str]:
         txs_list = self.cardano_gql_api.txs(txid_list)
         return {txdict['hash']: txdict['inputs'][0]['address'] for txdict in txs_list}
-    # def get_sender_addr_dict(self, txid_list: list[str]) -> dict[str, str]:
-
-    #     return_list = self.db_sync_tx_utxos(txid_list)
-    #     return {txdict['tx_hash']: txdict['inputs'][0]['payment_addr']['bech32'] for txdict in return_list}
-
-    # def db_sync_tx_utxos(self, txhashlist):
-    #     return self.get_postgrest_req_caller(txhashlist)
-
-    # def get_postgrest_req_caller(self, list_txids: list[str]):
-
-    #     chunks_of_1k, remainder = divmod(len(list_txids), 100)
-    #     request_chunk_array = [
-    #         list_txids[100 * i: 100 * (i + 1)] for i in range(chunks_of_1k)
-    #     ]
-
-    #     request_chunk_array.append(list_txids[100*chunks_of_1k:])
-
-    #     txs_list_json = []
-
-    #     for chunkcount, chunk in enumerate(request_chunk_array, start=1):
-    #         while True:
-    #             try:
-    #                 txs_list_json_local = self.get_postgrest_req(chunk)
-    #                 break
-    #             except Exception as e:
-    #                 if self.logging:
-    #                     print(e)
-    #                     print(
-    #                         "Postgrest chunk request failed. Requerying in 5 seconds...")
-    #                 time.sleep(5)
-    #         txs_list_json += txs_list_json_local
-    #     return txs_list_json
-
-    # def get_postgrest_req(self, list_txids: list[str]):
-    #     if not list_txids:
-    #         return []
-    #     tx_list = get_tx_dbid_list(list_txids)
-    #     tx_out_list = get_tx_out_dbid_list(
-    #         (txdbids := [tx['id'] for tx in tx_list]))
-    #     metadata_list = get_metadata_dbid_list(txdbids)
-    #     tx_ma_out_list = get_ma_tx_out_dbid_list(
-    #         [tx_out['id'] for tx_out in tx_out_list])
-    #     multi_asset_list = get_multi_asset_dbid_list(
-    #         [ma_out['ident'] for ma_out in tx_ma_out_list])
-
-    #     tx_out_list_by_txdbid = {tx['id']: [] for tx in tx_list}
-    #     for tx_out in tx_out_list:
-    #         tx_out_list_by_txdbid[tx_out['tx_id']].append(tx_out)
-
-    #     metadata_list_by_txdbid = {tx['id']: [] for tx in tx_list}
-    #     for metadata in metadata_list:
-    #         metadata_list_by_txdbid[metadata['tx_id']].append(metadata)
-
-    #     tx_ma_out_list_by_tx_out_dbid = {
-    #         tx_out['id']: [] for tx_out in tx_out_list}
-    #     for tx_ma_out in tx_ma_out_list:
-    #         tx_ma_out_list_by_tx_out_dbid[tx_ma_out['tx_out_id']].append(
-    #             tx_ma_out)
-
-    #     multi_asset_list_by_dbid = {ma['id']: ma for ma in multi_asset_list}
-
-    #     # inputs
-    #     tx_in_list = get_tx_in_dbid_list(txdbids)
-    #     tx_in_list_by_txdbid = {tx['id']: [] for tx in tx_list}
-    #     for tx_in in tx_in_list:
-    #         tx_in_list_by_txdbid[tx_in['tx_in_id']].append(tx_in)
-
-    #     tx_in_output_keys = [(txin['tx_out_id'], txin['tx_out_index'])
-    #                          for txin in tx_in_list]
-    #     tx_in_out_list = list(filter(lambda txout: (txout['tx_id'], txout['index']) in tx_in_output_keys, get_tx_out_dbid_list(
-    #         txin['tx_out_id'] for txin in tx_in_list)))
-    #     tx_in_out_dict = {(txout['tx_id'], txout['index'])                          : txout for txout in tx_in_out_list}
-
-    #     tx_in_tx_list = get_tx_by_dbid_list(
-    #         [tx['tx_id'] for tx in tx_in_out_list])
-    #     tx_in_tx_to_tx_hash = {tx['id']: remove_slash_x(
-    #         tx['hash']) for tx in tx_in_tx_list}
-
-    #     # recurse once to get input info
-
-    #     returnlist = []
-    #     for tx in tx_list:
-    #         tx_returndict = {'tx_hash': remove_slash_x(
-    #             tx['hash']), 'block_height': tx['block_id'], 'tx_block_index': tx['block_index'], 'fee': tx['fee']}
-
-    #         outputs = tx_out_list_by_txdbid[tx['id']]
-    #         outputs_list = []
-    #         for output in outputs:
-    #             output_dict = {"payment_addr": {"bech32": output['address'], "cred": remove_slash_x(
-    #                 output["payment_cred"])}, "value": output['value'], "tx_index": output['index']}
-
-    #             tx_ma_outs = tx_ma_out_list_by_tx_out_dbid[output['id']]
-    #             assets_list = []
-    #             for tx_ma_out in tx_ma_outs:
-    #                 asset_dict = {'quantity': tx_ma_out['quantity']}
-    #                 multi_asset = multi_asset_list_by_dbid[tx_ma_out['ident']]
-    #                 asset_dict['policy_id'] = remove_slash_x(
-    #                     multi_asset['policy'])
-    #                 asset_dict['asset_name'] = remove_slash_x(
-    #                     multi_asset['name'])
-    #                 assets_list.append(asset_dict)
-    #             output_dict['asset_list'] = assets_list
-
-    #             outputs_list.append(output_dict)
-
-    #         tx_returndict['outputs'] = outputs_list
-
-    #         metadata_list = []
-    #         for entry in metadata_list_by_txdbid[tx['id']]:
-    #             key = int(entry['key'])
-    #             json = entry['json']
-    #             metadata_list.append({'key': key, 'json': json})
-    #         tx_returndict['metadata'] = metadata_list
-
-    #         # inputs
-    #         inputs = tx_in_list_by_txdbid[tx['id']]
-    #         inputs_list = []
-    #         for input in inputs:
-    #             key_tuple = (input['tx_out_id'], input['tx_out_index'])
-    #             corresponding_output = tx_in_out_dict[key_tuple]
-
-    #             input_dict = {
-    #                 'payment_addr': {
-    #                     'bech32': corresponding_output['address'],
-    #                     'cred': remove_slash_x(
-    #                         corresponding_output["payment_cred"]
-    #                     ),
-    #                 }
-    #             }
-
-    #             input_dict['value'] = corresponding_output['value']
-    #             input_dict['tx_hash'] = tx_in_tx_to_tx_hash[corresponding_output['tx_id']]
-    #             input_dict['tx_index'] = input['tx_out_index']
-
-    #             inputs_list.append(input_dict)
-
-    #         tx_returndict['inputs'] = inputs_list
-
-    #         returnlist.append(tx_returndict)
-
-    #     return returnlist
 
     def printiflog(self, printstring):
         if self.logging:
@@ -591,267 +358,11 @@ class Faucet:
         return bytes.fromhex(hexstr).decode("utf-8")
 
 
-class Swapper:
-
-    # constructor
-    # apiKey: str - Blockfrost Api Key
-    # assetName: str - hex name of asset
-    # assetPolicyID: str - policy id of asset
-    # walletID: str - reference ID of wallet used by cardano-wallet
-    # faucetAddr: str - receiving address of faucet
-    # port: int - port that cardano-wallet is broadcasting on
-
-    def __init__(self, apiKey, receiveAssetName, receiveAssetPolicyID, sendAssetName, sendAssetPolicyID, walletID, swapperAddr, port=8090, host="localhost"):
-        self.api = BlockFrostApi(project_id=apiKey)
-        self.wallet = Wallet(
-            walletID, backend=WalletREST(port=port, host=host))
-
-        self.receiveAssetIDObj = AssetID(
-            receiveAssetName, receiveAssetPolicyID)
-        self.sendAssetIDObj = AssetID(sendAssetName, sendAssetPolicyID)
-
-        self.swapperAddr = swapperAddr
-        self.bundlesize = None
-
-        self.logFile = receiveAssetName+receiveAssetPolicyID + \
-            sendAssetName+sendAssetPolicyID+swapperAddr+"swap.json"
-
-        print("Token swap service tool created.\n")
-
-    def runloop(self, passphrase, period=300, loops=10000, bundlesize=20):
-        self.bundlesize = bundlesize
-
-        for _ in range(loops):
-            timenow = datetime.now()
-            print(f"SYS TIME:    {str(timenow)[:-7]}")
-
-            self.swaptokens(passphrase)
-            print("____________________SWAP____________________")
-            time.sleep(period)
-
-    def swaptokens(self, passphrase):
-
-        try:
-            remainingtokens = self.readAssetBalance()
-            lasttime = self.readLastTime()
-            lastslot = self.readSlot()
-
-        except FileNotFoundError as e:
-            raise FileNotFoundError(
-                "You have not generated the blockchain index files. Please call generateLog."
-            ) from e
-############################################################################################################
-
-        currenttime = datetime.now(timezone.utc)
-        print(f"TIME INT:    {str(lasttime)[:-7]} to {str(currenttime)[:-7]}")
-        newtxs = self.wallet.txsfiltered(lasttime)
-
-        incomingtxs = [
-            tx
-            for tx in newtxs
-            if tx.local_inputs == [] and tx.inserted_at.absolute_slot > lastslot
-        ]
-
-        if incomingtxs:
-            newlastslot = incomingtxs[-1].inserted_at.absolute_slot
-            newlasttime = self.isostringtodt(incomingtxs[-1].inserted_at.time)
-            self.writeLastTime(newlasttime)
-            self.writeSlot(newlastslot)
-
-        sendlist = []
-        tokensswapped = 0
-
-        for tx in incomingtxs:
-            txoutputs = list(tx.local_outputs)
-
-            totalcorrecttokens = 0
-            totalada = Decimal(0)
-
-            containsAssets = False
-            for output in txoutputs:
-                totalada += output.amount
-                for assettuple in output.assets:
-                    if assettuple[0] == self.receiveAssetIDObj:
-                        containsAssets = True
-                        totalcorrecttokens += assettuple[1]
-
-            if containsAssets:
-                senderaddr = None
-                attempt = 0
-                while senderaddr is None:
-                    try:
-                        senderaddr = self.api.transaction_utxos(
-                            hash=tx.txid).inputs[0].address
-                    except ApiError as e:
-                        attempt += 1
-                        print(
-                            f"Sender address fetch attempt {attempt} API Error {str(e.status_code)} - reattempting.")
-                        time.sleep(3)
-
-                    sendlist.append(
-                        {"senderaddr": senderaddr, "tokenpayload": totalcorrecttokens, "returnada": totalada})
-
-                    tokensswapped += totalcorrecttokens
-
-        if sendlist:
-            self.autoSendAssets(sendlist, passphrase)
-            print(f"TKN SWAPPED: {str(tokensswapped)}")
-            self.writeAssetBalance(remainingtokens-tokensswapped)
-
-
-############################################################################
-
-
-    def autoSendAssets(self, pendingTxList, passphrase):
-        if self.bundlesize is None:
-            self.bundlesize = 25
-        groupsof = []
-        smallarray = []
-
-        # break into groups of bundlesize (25 by default) due to tx size constraints
-        for i in range(len(pendingTxList)):
-            if i == len(pendingTxList)-1:
-                smallarray.append(pendingTxList[i])
-                groupsof.append(smallarray)
-            else:
-                if len(smallarray) == self.bundlesize:
-                    groupsof.append(smallarray)
-                    smallarray = []
-                smallarray.append(pendingTxList[i])
-
-        for groupof in groupsof:
-            destinations = []
-            for pendingtx in groupof:
-                #{"senderaddr": senderaddr, "tokenpayload": randomyield, "returnada": returnada}
-                if pendingtx['tokenpayload'] != 0:
-                    destinations.append((pendingtx['senderaddr'], pendingtx['returnada'], [
-                                        (self.sendAssetIDObj, pendingtx['tokenpayload'])]))
-                else:
-                    destinations.append(
-                        (pendingtx['senderaddr'], pendingtx['returnada']))
-
-            attempts = 0
-            sent = False
-            while not sent:
-                # loop 10 times, 30 seconds each, to give time for any pending transactions to be broadcast and free up UTXOs to build the next transaction
-                # if it still doesn't go through after 300 seconds of pause, the wallet has probably run out of funds, or the blockchain is
-                # ridiculously congested
-                try:
-                    self.wallet.transfer_multiple(
-                        destinations, passphrase=passphrase)
-                    sent = True
-                except CannotCoverFee as e:
-                    if attempts == 11:
-                        raise CannotCoverFee(
-                            "There is likely insufficient funds in your wallet to distribute the requested tokens."
-                        ) from e
-
-                    attempts += 1
-                    time.sleep(30)
-                except RESTServerError as e:
-                    if attempts == 11:
-                        raise RESTServerError(
-                            "There are likely insufficient tokens in your wallet to distribute."
-                        ) from e
-
-                    attempts += 1
-                    time.sleep(30)
-
-    # last PROCESSED SLOT
-    # format is blockno:indexno
-    # returns tuple! make sure you match
-
-#############################################################
-
-    @staticmethod
-    def dttodict(dt):
-        return {"year": dt.year, "month": dt.month, "day": dt.day, "hour": dt.hour, "minute": dt.minute, "second": dt.second,  "mus": dt.microsecond}
-
-    @staticmethod
-    def dicttodt(dtdict):
-        return datetime(dtdict['year'], dtdict['month'], dtdict['day'], dtdict['hour'], dtdict['minute'], dtdict['second'], dtdict['mus'])
-
-    @staticmethod
-    def isostringtodt(isostring):
-        return datetime(
-            int(isostring[:4]),
-            int(isostring[5:7]),
-            int(isostring[8:10]),
-            int(isostring[11:13]),
-            int(isostring[14:16]),
-            int(isostring[17:19]),
-            1,
-        )
-
-    def generateLog(self, initTokenbalance):
-        timenow = datetime.utcnow()
-        logdict = {"tokenBalance": [initTokenbalance], "txTime": [
-            self.dttodict(timenow)], "slot": [1]}
-
-        with open(self.logFile, 'w') as f:
-            json.dump(logdict, f)
-
-    def readLog(self):
-        with open(self.logFile, 'r') as f:
-            return json.load(f)
-
-    def writeLog(self, logDict):
-        with open(self.logFile, 'w') as f:
-            json.dump(logDict, f)
-
-    def rollback(self):
-        logDict = self.readLog()
-        logDict['txTime'].append(logDict['txTime'][-2])
-        logDict['slot'].append(logDict['slot'][-2])
-        self.writeLog(logDict)
-
-    def readLastTime(self):
-        logDict = self.readLog()
-        return self.dicttodt(logDict['txTime'][-1])
-
-    def writeLastTime(self, dt):
-        logDict = self.readLog()
-        logDict['txTime'].append(self.dttodict(dt))
-        self.writeLog(logDict)
-
-    def readSlot(self):
-        logDict = self.readLog()
-        return logDict['slot'][-1]
-
-    def writeSlot(self, slot):
-        logDict = self.readLog()
-        logDict['slot'].append(slot)
-        self.writeLog(logDict)
-
-    def readAssetBalance(self):
-        logDict = self.readLog()
-        return logDict['tokenBalance'][-1]
-
-    def writeAssetBalance(self, balance):
-        logDict = self.readLog()
-        logDict['tokenBalance'].append(balance)
-        self.writeLog(logDict)
-
-        print(f"TOKENS REM:  {str(balance)}\n")
-
-
-###############################################################
-    # save processed transactions to file
-
-    @staticmethod
-    def hexencode(utf8str):
-        return utf8str.encode("utf-8").hex()
-
-    @staticmethod
-    def hexdecode(hexstr):
-        return bytes.fromhex(hexstr).decode("utf-8")
-
-
 class CardanoGQL:
     def __init__(self, apiurl):
         self.apiurl = apiurl
 
-    def get_cardano_gql_query(self, querystr, variables=None):
+    def __get_cardano_gql_query(self, querystr, variables=None):
         sendjson = {"query": querystr}
         hdr = {"Content-Type": "application/json"}
 
@@ -860,17 +371,29 @@ class CardanoGQL:
 
         req = requests.post(self.apiurl, headers=hdr, json=sendjson)
 
-        return req.json()['data']
+        return req.json()
 
-    def addr_txs(self, payment_address, from_block):
+    @staticmethod
+    def __fromHex(hexStr: str) -> str:
+        return bytearray.fromhex(hexStr).decode()
+
+    @staticmethod
+    def __toHex(utfStr: str) -> str:
+        return utfStr.encode("utf-8").hex()
+
+    @staticmethod
+    def __chunks(lst, n):
+        for i in range(0, len(lst), n):
+            yield lst[i:i + n]
+
+    def addr_txs(self, payment_address, from_block=1):
         query = '''
-                query transactionsByHashesWithTokens(
+                query addrTxs(
                     $address: String!
                     $fromBlock: Int!
                 ) {
                     blocks (
                         where: { number : { _gte: $fromBlock}}
-                        order_by: {number: asc}
                     ){
                         number
                         transactions (where: {_or:[
@@ -915,11 +438,63 @@ class CardanoGQL:
                 '''
 
         variables = {"address": payment_address, "fromBlock": from_block}
-        return list(functools.reduce(operator.add, [block['transactions'] for block in self.get_cardano_gql_query(query, variables)['blocks'] if block['transactions']] ))
+        req = self.__get_cardano_gql_query(query, variables)
+
+        flat_req = [block['transactions']
+                    for block in req['data']['blocks'] if block['transactions']]
+        return list(functools.reduce(operator.add, flat_req)) if flat_req else []
+
+    def addr_txs_full(self, payment_address):
+        def paginate_txs(incoming_or_outgoing) -> set[str]:
+            if incoming_or_outgoing == "i":
+                query = '''
+                    query addrTxs(
+                        $address: String!
+                        $limit: Int
+                        $offset: Int
+                    ) {
+                        transactions (where: {outputs: {address:{_eq: $address}}}, limit: $limit, offset: $offset) {
+                            hash
+                        }
+                    }
+                    '''
+            elif incoming_or_outgoing == "o":
+                query = '''
+                    query addrTxs(
+                        $address: String!
+                        $limit: Int
+                        $offset: Int
+                    ) {
+                        transactions (where: {inputs: {address:{_eq: $address}}}, limit: $limit, offset: $offset) {
+                            hash
+                        }
+                    }
+                    '''
+
+            anotherloop = True
+            tx_hashes_set = set()
+            numloops = 0
+            while anotherloop:
+                variables = {"address": payment_address,
+                             "limit": 2500, "offset": numloops*2500}
+                req = self.__get_cardano_gql_query(query, variables)
+                returns_set = {tx['hash']
+                               for tx in req['data']['transactions']}
+                tx_hashes_set.update(returns_set)
+
+                numloops += 1
+                anotherloop = len(returns_set) == 2500
+
+            return tx_hashes_set
+
+        incoming_set = paginate_txs("i")
+        outgoing_set = paginate_txs("o")
+
+        return self.txs(list(incoming_set.union(outgoing_set)))
 
     def txs(self, tx_hash_list):
         query = '''
-                query transactionsByHashesWithTokens(
+                query txs(
                     $hashes: [Hash32Hex]!
                 ) {
                     transactions(
@@ -961,8 +536,45 @@ class CardanoGQL:
                 }
                 '''
 
-        variables = {"hashes": tx_hash_list}
+        if len(tx_hash_list) <= 1000:
+            variables = {"hashes": tx_hash_list}
+            req = self.__get_cardano_gql_query(query, variables)
+            return req['data']['transactions']
 
-        return self.get_cardano_gql_query(query, variables)['transactions']
+        first_part = tx_hash_list[:1000]
+        variables = {"hashes": first_part}
+        req = self.__get_cardano_gql_query(query, variables)
+        first_part_txs = req['data']['transactions']
 
+        return first_part_txs + self.txs(tx_hash_list[1000:])
 
+    def chain_tip(self):
+        query = '''
+        { cardano { tip { number slotNo epoch { number } } } }
+        '''
+        return self.__get_cardano_gql_query(query)['data']
+
+    def get_handle_addr(self, handle_name):
+        if handle_name[0] == "$":
+            handle_name = handle_name[1:]
+
+        query = '''
+            query assetHolders(
+                $policyId: Hash28Hex!
+                $assetName: Hex
+            ) {
+                utxos (limit: 1,
+                    where: { tokens: { asset: { _and: [
+                        {policyId: { _eq: $policyId}},
+                        {assetName: { _eq: $assetName}}
+                    ]}}}
+                ) {
+                    address
+                }
+            }
+        '''
+        variables = {"assetName": self.__toHex(
+            handle_name), "policyId": "f0ff48bbb7bbe9d59a40f1ce90e9e9d0ff5002ec48f232b49ca0fb9a"}
+        req = self.__get_cardano_gql_query(query, variables)
+
+        return req['data']['utxos'][0]['address'] if req['data']['utxos'] else None
