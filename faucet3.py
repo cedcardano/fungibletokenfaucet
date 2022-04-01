@@ -251,7 +251,7 @@ class Faucet:
 
     def get_sender_addr_dict(self, txid_list: list[str]) -> dict[str, str]:
         def in_dict():
-            return sum(tx in tx_addr_dict for tx in txid_list) == len(txid_list)
+            return sum((tx in tx_addr_dict) for tx in txid_list) == len(txid_list)
 
         tx_addr_dict = {}
         while not in_dict():
