@@ -71,12 +71,10 @@ class Faucet:
 
         sendlist, numpulls = self.prepare_sendlist(
             assetFilteredTxs, senderaddrdict, multsallowed, remainingtokens)
-        if self.discord:
-            if prepare_topups := self.prepare_discord_topups():
+        discord_topup = False
+        if self.discord and (prepare_topups := self.prepare_discord_topups()):
                 sendlist += prepare_topups
                 discord_topup = True
-            else:
-                discord_topup = False
 
         if len(sendlist) > 0:
             total_send, outbound_txs = self.autoSendAssets(
