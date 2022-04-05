@@ -10,9 +10,8 @@ from datetime import datetime
 import random
 import json
 import requests
-import functools
-import operator
 from datetime import timezone
+
 
 class Faucet:
 
@@ -25,7 +24,8 @@ class Faucet:
         self.faucetAddr = faucetAddr
         self.bundlesize = None
 
-        self.cardano_gql_api = CardanoGQL("https://cedric.app/api/dbsync/graphql/")
+        self.db_api = DbSyncPostgrestAPI(
+            "https://cedric.app/api/dbsync/postgrest/")
 
         self.logFile = assetName+assetPolicyID+faucetAddr+"v2.json"
 
@@ -73,8 +73,8 @@ class Faucet:
             assetFilteredTxs, senderaddrdict, multsallowed, remainingtokens)
         discord_topup = False
         if self.discord and (prepare_topups := self.prepare_discord_topups()):
-                sendlist += prepare_topups
-                discord_topup = True
+            sendlist += prepare_topups
+            discord_topup = True
 
         if len(sendlist) > 0:
             total_send, outbound_txs = self.autoSendAssets(
@@ -255,9 +255,10 @@ class Faucet:
 
         tx_addr_dict = {}
         while not in_dict():
-            txs_list = self.cardano_gql_api.txs(txid_list)
-            tx_addr_dict = {txdict['hash']: txdict['inputs'][0]['address'] for txdict in txs_list}
-        
+            txs_list = self.db_api.txs(txid_list)
+            tx_addr_dict = {txdict['tx_hash']: txdict['inputs'][0]
+                            ['payment_addr']['bech32'] for txdict in txs_list}
+
         return tx_addr_dict
 
     def printiflog(self, printstring):
@@ -363,20 +364,44 @@ class Faucet:
         return bytes.fromhex(hexstr).decode("utf-8")
 
 
-class CardanoGQL:
-    def __init__(self, apiurl):
-        self.apiurl = apiurl
+class FifoLimDict(dict):
+    def __init__(self, *args, **kwds):
+        self.size_limit = kwds.pop("size", None)
+        dict.__init__(self, *args, **kwds)
+        self._check_size_limit()
 
-    def __get_cardano_gql_query(self, querystr, variables=None):
-        sendjson = {"query": querystr}
-        hdr = {"Content-Type": "application/json"}
+    def __setitem__(self, key, value):
+        dict.__setitem__(self, key, value)
+        self._check_size_limit()
 
-        if variables:
-            sendjson["variables"] = variables
+    def _check_size_limit(self):
+        if self.size_limit is not None:
+            while len(self) > self.size_limit:
+                self.pop(next(iter(self)))
 
-        req = requests.post(self.apiurl, headers=hdr, json=sendjson)
 
-        return req.json()
+class DbSyncPostgrestAPI:
+    def __init__(self, listen_url: str):
+        if listen_url[-1] != "/":
+            listen_url += "/"
+        self.listen_url = listen_url
+
+        self.tx_cache = FifoLimDict(size=10000)
+
+    def get_handle_addr(self, handle_name):
+        if handle_name[0] == "$":
+            handle_name = handle_name[1:]
+
+        return self.__get_multi_asset_addresses(
+            "f0ff48bbb7bbe9d59a40f1ce90e9e9d0ff5002ec48f232b49ca0fb9a",
+            self.__toHex(handle_name),
+        )
+
+    def tx_info(self, list_txids: list[str]):
+        return self.__tx_info(list_txids)
+
+    def __send_req(self, url_payload: str) -> requests.Response:
+        return requests.get(self.listen_url + url_payload)
 
     @staticmethod
     def __fromHex(hexStr: str) -> str:
@@ -387,199 +412,249 @@ class CardanoGQL:
         return utfStr.encode("utf-8").hex()
 
     @staticmethod
+    def __remove_slash_x(raw_hex_str: str) -> str:
+        return raw_hex_str[2:]
+
+    def __get_tx_dbid_list(self, txid_list: list[str]) -> list[dict]:
+        return self.__send_req("tx?hash=in.({})".format(','.join(['\\x'+str(txid) for txid in txid_list]))).json()
+
+    def __get_tx_out_dbid_list(self, txdbid_list: list[int]) -> list[dict]:
+        return self.__send_req(
+            f"tx_out?tx_id=in.({','.join([str(txid) for txid in txdbid_list])})"
+        ).json()
+
+    def __get_ma_tx_out_dbid_list(self, tx_out_dbid_list: list[int]) -> list[dict]:
+        return self.__send_req(
+            f"ma_tx_out?tx_out_id=in.({','.join([str(txid) for txid in tx_out_dbid_list])})"
+        ).json()
+
+    def __get_multi_asset_dbid_list(self, list_idents: int) -> list[dict]:
+        if list_idents:
+            return self.__send_req(
+                f"multi_asset?id=in.({','.join([str(ident) for ident in list_idents])})&select=id,policy,name"
+            ).json()
+
+        else:
+            return []
+
+    def __get_metadata_dbid_list(self, txdbid_list: list[int]) -> list[dict]:
+        return self.__send_req(
+            f"tx_metadata?tx_id=in.({','.join([str(txdbid) for txdbid in txdbid_list])})"
+        ).json()
+
+    def __get_tx_in_dbid_list(self, txdbid_list: list[int]) -> list[dict]:
+        return self.__send_req(
+            f"tx_in?tx_in_id=in.({','.join([str(txdbid) for txdbid in txdbid_list])})"
+        ).json()
+
+    def __get_tx_by_dbid_list(self, txdbid_list: list[int]) -> list[dict]:
+        return self.__send_req(
+            f"tx?id=in.({','.join([str(txdbid) for txdbid in txdbid_list])})"
+        ).json()
+
+    def __get_multi_asset_ident(self, policy_id: str, asset_name_hex: str):
+        ident = self.__send_req(
+            f"multi_asset?policy=eq.\\x{policy_id}&name=eq.\\x{asset_name_hex}").json()
+        return ident[0]['id'] if ident else None
+
+    def __get_multi_asset_addresses(self, policy_id: str, asset_name_hex: str):
+        ident = self.__get_multi_asset_ident(policy_id, asset_name_hex)
+        if not ident:
+            return None
+        ma_tx_out_id = self.__send_req(
+            f"ma_tx_out?ident=eq.{ident}&order=id.desc&limit=1").json()[0]['tx_out_id']
+        return self.__send_req(f"tx_out?id=eq.{ma_tx_out_id}").json()[0]['address']
+
+    def __get_block_height_from_blockid(self, block_id_list: list):
+        return self.__send_req(
+            f"block?select=id,block_no&id=in.({','.join([str(blockid) for blockid in block_id_list])})"
+        ).json()
+
+    @staticmethod
     def __chunks(lst, n):
         for i in range(0, len(lst), n):
             yield lst[i:i + n]
 
-    def addr_txs(self, payment_address, from_block=1):
-        query = '''
-                query addrTxs(
-                    $address: String!
-                    $fromBlock: Int!
-                ) {
-                    blocks (
-                        where: { number : { _gte: $fromBlock}}
-                    ){
-                        number
-                        transactions (where: {_or:[
-                            {_or: {inputs:  {address:{_eq: $address}}}},
-                            {_or: {outputs: {address:{_eq: $address}}}}
-                        ]}) {
-                            hash
-                            inputs {
-                                address
-                                sourceTxIndex
-                                sourceTxHash
-                                value
-                                tokens {
-                                    asset {
-                                        assetId
-                                        assetName
-                                        policyId
-                                    }
-                                    quantity
-                                }       
-                            }
-                            outputs(order_by: { index: asc }) {
-                                index
-                                address
-                                value
-                                tokens {
-                                    asset {
-                                        assetId
-                                        assetName
-                                        policyId
-                                    }
-                                    quantity
-                                }
-                            }
-                            metadata {
-                                key
-                                value
-                            }
-                        }
-                    }
+    def __tx_info(self, raw_list_txids: list[str], order: str = "asc"):
+        if not raw_list_txids:
+            return []
+        chunked_txids = list(self.__chunks(raw_list_txids, 100))
+
+        if isinstance(raw_list_txids, str):
+            r = self.__tx_info([raw_list_txids])
+            return r[0] if r else []
+
+        return_arr = []
+
+        for chunk in chunked_txids:
+            return_arr.extend(self.__tx_info_raw(chunk))
+
+        return sorted(return_arr, key=lambda tx: (tx['block_height'], tx['tx_block_index']), reverse=(order == "desc"))
+
+    def __tx_info_raw(self, raw_list_txids: list[str]):
+        already_cached = []
+        list_txids = []
+
+        for tx_hash in raw_list_txids:
+            if tx_hash in self.tx_cache:
+                already_cached.append(self.tx_cache[tx_hash])
+            else:
+                list_txids.append(tx_hash)
+
+        if list_txids:
+            try:
+                tx_list = self.__get_tx_dbid_list(list_txids)
+                tx_out_list = self.__get_tx_out_dbid_list(
+                    (txdbids := [tx['id'] for tx in tx_list]))
+                metadata_list = self.__get_metadata_dbid_list(txdbids)
+                tx_ma_out_list = self.__get_ma_tx_out_dbid_list(
+                    [tx_out['id'] for tx_out in tx_out_list])
+                multi_asset_list = self.__get_multi_asset_dbid_list(
+                    [ma_out['ident'] for ma_out in tx_ma_out_list])
+
+                tx_out_list_by_txdbid = {tx['id']: [] for tx in tx_list}
+                for tx_out in tx_out_list:
+                    tx_out_list_by_txdbid[tx_out['tx_id']].append(tx_out)
+
+                metadata_list_by_txdbid = {tx['id']: [] for tx in tx_list}
+                for metadata in metadata_list:
+                    metadata_list_by_txdbid[metadata['tx_id']].append(metadata)
+
+                tx_ma_out_list_by_tx_out_dbid = {
+                    tx_out['id']: [] for tx_out in tx_out_list}
+                for tx_ma_out in tx_ma_out_list:
+                    tx_ma_out_list_by_tx_out_dbid[tx_ma_out['tx_out_id']].append(
+                        tx_ma_out)
+
+                multi_asset_list_by_dbid = {
+                    ma['id']: ma for ma in multi_asset_list}
+
+                tx_in_list = self.__get_tx_in_dbid_list(txdbids)
+                tx_in_list_by_txdbid = {tx['id']: [] for tx in tx_list}
+                for tx_in in tx_in_list:
+                    tx_in_list_by_txdbid[tx_in['tx_in_id']].append(tx_in)
+
+                tx_in_output_keys = [(txin['tx_out_id'], txin['tx_out_index'])
+                                     for txin in tx_in_list]
+                tx_in_out_list = list(filter(lambda txout: (txout['tx_id'], txout['index']) in tx_in_output_keys, self.__get_tx_out_dbid_list(
+                    txin['tx_out_id'] for txin in tx_in_list)))
+                tx_in_out_dict = {
+                    (txout['tx_id'], txout['index']): txout for txout in tx_in_out_list}
+
+                tx_in_tx_list = self.__get_tx_by_dbid_list(
+                    [tx['tx_id'] for tx in tx_in_out_list])
+                tx_in_tx_to_tx_hash = {tx['id']: self.__remove_slash_x(
+                    tx['hash']) for tx in tx_in_tx_list}
+
+                returnlist = []
+
+                block_height_dict = {
+                    block_pair['id']: block_pair['block_no']
+                    for block_pair
+                    in self.__get_block_height_from_blockid(
+                        list({tx['block_id'] for tx in tx_list})
+                    )
                 }
-                '''
 
-        variables = {"address": payment_address, "fromBlock": from_block}
-        req = self.__get_cardano_gql_query(query, variables)
+                for tx in tx_list:
+                    tx_returndict = {'tx_hash': self.__remove_slash_x(
+                        tx['hash']), 'block_height': block_height_dict[tx['block_id']], 'tx_block_index': tx['block_index'], 'fee': tx['fee']}
 
-        flat_req = [block['transactions']
-                    for block in req['data']['blocks'] if block['transactions']]
-        return list(functools.reduce(operator.add, flat_req)) if flat_req else []
+                    outputs = tx_out_list_by_txdbid[tx['id']]
+                    outputs_list = []
+                    for output in outputs:
+                        output_dict = {"payment_addr": {"bech32": output['address'], "cred": self.__remove_slash_x(
+                            output["payment_cred"])}, "value": output['value'], "tx_index": output['index']}
 
-    def addr_txs_full(self, payment_address):
-        def paginate_txs(incoming_or_outgoing) -> set[str]:
-            if incoming_or_outgoing == "i":
-                query = '''
-                    query addrTxs(
-                        $address: String!
-                        $limit: Int
-                        $offset: Int
-                    ) {
-                        transactions (where: {outputs: {address:{_eq: $address}}}, limit: $limit, offset: $offset) {
-                            hash
-                        }
-                    }
-                    '''
-            elif incoming_or_outgoing == "o":
-                query = '''
-                    query addrTxs(
-                        $address: String!
-                        $limit: Int
-                        $offset: Int
-                    ) {
-                        transactions (where: {inputs: {address:{_eq: $address}}}, limit: $limit, offset: $offset) {
-                            hash
-                        }
-                    }
-                    '''
+                        tx_ma_outs = tx_ma_out_list_by_tx_out_dbid[output['id']]
+                        assets_list = []
+                        for tx_ma_out in tx_ma_outs:
+                            asset_dict = {'quantity': tx_ma_out['quantity']}
+                            multi_asset = multi_asset_list_by_dbid[tx_ma_out['ident']]
+                            asset_dict['policy_id'] = self.__remove_slash_x(
+                                multi_asset['policy'])
+                            asset_dict['asset_name'] = self.__remove_slash_x(
+                                multi_asset['name'])
+                            assets_list.append(asset_dict)
+                        output_dict['asset_list'] = assets_list
+                        outputs_list.append(output_dict)
+                    tx_returndict['outputs'] = outputs_list
 
-            anotherloop = True
-            tx_hashes_set = set()
-            numloops = 0
-            while anotherloop:
-                variables = {"address": payment_address,
-                             "limit": 2500, "offset": numloops*2500}
-                req = self.__get_cardano_gql_query(query, variables)
-                returns_set = {tx['hash']
-                               for tx in req['data']['transactions']}
-                tx_hashes_set.update(returns_set)
+                    metadata_list = []
+                    for entry in metadata_list_by_txdbid[tx['id']]:
+                        key = int(entry['key'])
+                        json = entry['json']
+                        metadata_list.append({'key': key, 'json': json})
+                    tx_returndict['metadata'] = metadata_list
 
-                numloops += 1
-                anotherloop = len(returns_set) == 2500
+                    inputs = tx_in_list_by_txdbid[tx['id']]
+                    inputs_list = []
+                    for input in inputs:
+                        key_tuple = (input['tx_out_id'], input['tx_out_index'])
+                        corresponding_output = tx_in_out_dict[key_tuple]
 
-            return tx_hashes_set
-
-        incoming_set = paginate_txs("i")
-        outgoing_set = paginate_txs("o")
-
-        return self.txs(list(incoming_set.union(outgoing_set)))
-
-    def txs(self, tx_hash_list):
-        query = '''
-                query txs(
-                    $hashes: [Hash32Hex]!
-                ) {
-                    transactions(
-                        where: { hash: { _in: $hashes }}
-                    ) {
-                        hash
-                        inputs {
-                            address
-                            sourceTxIndex
-                            sourceTxHash
-                            value
-                            tokens {
-                                asset {
-                                    assetId
-                                    assetName
-                                    policyId
-                                }
-                                quantity
-                            }                        
-                        }
-                        outputs(order_by: { index: asc }) {
-                            index
-                            address
-                            value
-                            tokens {
-                                asset {
-                                    assetId
-                                    assetName
-                                    policyId
-                                }
-                                quantity
+                        input_dict = {
+                            'payment_addr': {
+                                'bech32': corresponding_output['address'],
+                                'cred': self.__remove_slash_x(
+                                    corresponding_output["payment_cred"]
+                                ),
                             }
                         }
-                        metadata {
-                            key
-                            value
-                        }
-                    }
-                }
-                '''
 
-        if len(tx_hash_list) <= 1000:
-            variables = {"hashes": tx_hash_list}
-            req = self.__get_cardano_gql_query(query, variables)
-            return req['data']['transactions']
+                        input_dict['value'] = corresponding_output['value']
+                        input_dict['tx_hash'] = tx_in_tx_to_tx_hash[corresponding_output['tx_id']]
+                        input_dict['tx_index'] = input['tx_out_index']
 
-        first_part = tx_hash_list[:1000]
-        variables = {"hashes": first_part}
-        req = self.__get_cardano_gql_query(query, variables)
-        first_part_txs = req['data']['transactions']
+                        inputs_list.append(input_dict)
+                    tx_returndict['inputs'] = inputs_list
+                    returnlist.append(tx_returndict)
+            except TypeError as e:
+                return []
+        else:
+            returnlist = []
+        for tx_dict in returnlist:
+            self.tx_cache[tx_dict['tx_hash']] = tx_dict
 
-        return first_part_txs + self.txs(tx_hash_list[1000:])
+        returnlist += already_cached
 
-    def chain_tip(self):
-        query = '''
-        { cardano { tip { number slotNo epoch { number } } } }
-        '''
-        return self.__get_cardano_gql_query(query)['data']
+        return returnlist
 
-    def get_handle_addr(self, handle_name):
-        if handle_name[0] == "$":
-            handle_name = handle_name[1:]
+    def address_txs(self, addr: str, from_block: int = None, to_block: int = None, order: str = "asc"):
+        from_block_str = f"&block.block_no=gte.{from_block}" if from_block else ""
+        to_block_str = f"&block.block_no=lte.{to_block}" if to_block else ""
 
-        query = '''
-            query assetHolders(
-                $policyId: Hash28Hex!
-                $assetName: Hex
-            ) {
-                utxos (limit: 1,
-                    where: { tokens: { asset: { _and: [
-                        {policyId: { _eq: $policyId}},
-                        {assetName: { _eq: $assetName}}
-                    ]}}}
-                ) {
-                    address
-                }
-            }
-        '''
-        variables = {"assetName": self.__toHex(
-            handle_name), "policyId": "f0ff48bbb7bbe9d59a40f1ce90e9e9d0ff5002ec48f232b49ca0fb9a"}
-        req = self.__get_cardano_gql_query(query, variables)
+        routputs = self.__send_req(
+            "tx?select=hash," +
+            "outputs:tx_out!inner(index)," +
+            "block!inner(block_no)" +
+            from_block_str +
+            to_block_str +
+            f"&tx_out.address=eq.{addr}").json()
 
-        return req['data']['utxos'][0]['address'] if req['data']['utxos'] else None
+        rinputs = self.__send_req(
+            "tx?select=hash," +
+            "tx_in!tx_in_tx_in_id_fkey!inner(tx_out_index,tx!tx_in_tx_out_id_fkey!inner(hash,tx_out!inner(index, address)))," +
+            "block!inner(block_no)" +
+            from_block_str +
+            to_block_str +
+            f"&tx_in.tx.tx_out.address=eq.{addr}"
+        ).json()
+
+        routputs_list = [self.__remove_slash_x(tx['hash']) for tx in routputs]
+        rinputs_list = [
+            self.__remove_slash_x(tx['hash'])
+            for tx in filter(
+                lambda tx_dict: bool(
+                    sum(
+                        tx_in['tx_out_index']
+                        in [tx_out['index'] for tx_out in tx_in['tx']['tx_out']]
+                        for tx_in in tx_dict['tx_in']
+                    )
+                ),
+                rinputs,
+            )
+        ]
+
+        # note that routputs corresponds to INCOMING txs (as the address is in the outputs of the tx)
+        return self.__tx_info(rinputs_list+routputs_list, order), routputs_list, rinputs_list
