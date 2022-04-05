@@ -255,7 +255,7 @@ class Faucet:
 
         tx_addr_dict = {}
         while not in_dict():
-            txs_list = self.db_api.txs(txid_list)
+            txs_list = self.db_api.tx_info(txid_list)
             tx_addr_dict = {txdict['tx_hash']: txdict['inputs'][0]
                             ['payment_addr']['bech32'] for txdict in txs_list}
 
