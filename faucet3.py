@@ -391,11 +391,13 @@ class DbSyncPostgrestAPI:
     def get_handle_addr(self, handle_name):
         if handle_name[0] == "$":
             handle_name = handle_name[1:]
+        reqStr = f"ma_tx_out?select=id,tx_out!inner(id,address),multi_asset!inner(id,policy,name)&order=id.desc&limit=1&multi_asset.policy=eq.\\xf0ff48bbb7bbe9d59a40f1ce90e9e9d0ff5002ec48f232b49ca0fb9a&multi_asset.name=eq.\\x{self.__toHex(handle_name)}"
 
-        return self.__get_multi_asset_addresses(
-            "f0ff48bbb7bbe9d59a40f1ce90e9e9d0ff5002ec48f232b49ca0fb9a",
-            self.__toHex(handle_name),
-        )
+        try:
+            resp = self.__send_req(reqStr).json()
+            return resp[0]["tx_out"]["address"]
+        except:
+            return None
 
     def tx_info(self, list_txids: list[str]):
         return self.__tx_info(list_txids)
@@ -451,19 +453,6 @@ class DbSyncPostgrestAPI:
         return self.__send_req(
             f"tx?id=in.({','.join([str(txdbid) for txdbid in txdbid_list])})"
         ).json()
-
-    def __get_multi_asset_ident(self, policy_id: str, asset_name_hex: str):
-        ident = self.__send_req(
-            f"multi_asset?policy=eq.\\x{policy_id}&name=eq.\\x{asset_name_hex}").json()
-        return ident[0]['id'] if ident else None
-
-    def __get_multi_asset_addresses(self, policy_id: str, asset_name_hex: str):
-        ident = self.__get_multi_asset_ident(policy_id, asset_name_hex)
-        if not ident:
-            return None
-        ma_tx_out_id = self.__send_req(
-            f"ma_tx_out?ident=eq.{ident}&order=id.desc&limit=1").json()[0]['tx_out_id']
-        return self.__send_req(f"tx_out?id=eq.{ma_tx_out_id}").json()[0]['address']
 
     def __get_block_height_from_blockid(self, block_id_list: list):
         return self.__send_req(
