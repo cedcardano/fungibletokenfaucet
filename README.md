@@ -7,6 +7,8 @@ Requires a local node (can use Daedalus' socket) and a cardano-wallet server on 
 
 EDIT: The faucet now requires communication with a db-sync instance to run - but this doesn't have to be local. You can use the community APIs provided by https://dandelion.link
 
+EDIT!!:: This is spaghetti code, an improved version is in the works.
+
 # How-to
 This file is intended to be run from Python Shell. It requires the same package installations as cardano-python - please ensure those are present in the venv.
 
